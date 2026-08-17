@@ -21,7 +21,7 @@ import { useAuth } from './hooks/useAuth'
 import VistaVMS from './components/VistaVMS'
 
 export default function App() {
-  const { user, signIn, signOut } = useAuth()
+  const { user, signInWithPassword, enrollBiometric, verifyBiometric, signOut } = useAuth()
   const [apiHealthy, setApiHealthy] = useState(null)
 
   // Lightweight health probe on mount
@@ -35,7 +35,9 @@ export default function App() {
     <VistaVMS
       apiMode={apiHealthy === true}
       authUser={user}
-      onLogin={signIn}
+      onSignInWithPassword={signInWithPassword}
+      onEnrollBiometric={enrollBiometric}
+      onVerifyBiometric={verifyBiometric}
       onLogout={signOut}
     />
   )
