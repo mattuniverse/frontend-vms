@@ -36,7 +36,10 @@ export function useAuth() {
   // right after, or simply prompt them to sign in again.
   const enrollBiometric = useCallback(async (preAuthToken, nickname) => {
     const { data } = await webauthnRegisterOptions(preAuthToken)
-    const attResp = await startRegistration({ optionsJSON: JSON.parse(data.options) })
+    console.log('[enrollBiometric] raw data.options:', data.options)
+    const parsedOptions = JSON.parse(data.options)
+    console.log('[enrollBiometric] parsed options:', parsedOptions)
+    const attResp = await startRegistration({ optionsJSON: parsedOptions })
     await webauthnRegisterVerify(preAuthToken, attResp, nickname)
   }, [])
 
