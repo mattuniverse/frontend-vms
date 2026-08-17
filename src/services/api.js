@@ -28,6 +28,8 @@ api.interceptors.response.use(
 )
 
 // ── Auth ──────────────────────────────────────────────────────────
+// Step 1: password check. Returns { pre_auth_token, registration_required }
+// — NOT a session token. A real session only exists after step 2 below.
 export const login = (email, password) => {
   const form = new URLSearchParams()
   form.append('username', email)
@@ -37,6 +39,21 @@ export const login = (email, password) => {
   })
 }
 export const logout = () => api.post('/auth/logout')
+
+// ── WebAuthn (Face ID / fingerprint) ─────────────────────────────
+// Step 2a: first-time device enrollment (uses the same pre_auth_token).
+export const webauthnRegisterOptions = (preAuthToken) =>
+  api.post('/auth/webauthn/register/options', { pre_auth_token: preAuthToken })
+export const webauthnRegisterVerify = (preAuthToken, credential, nickname) =>
+  api.post('/auth/webauthn/register/verify', { pre_auth_token: preAuthToken, credential, nickname })
+
+// Step 2b: biometric confirmation on an already-enrolled device. Verify
+// returns the same { access_token, user } shape the old /auth/login used to.
+export const webauthnLoginOptions = (preAuthToken) =>
+  api.post('/auth/webauthn/login/options', { pre_auth_token: preAuthToken })
+export const webauthnLoginVerify = (preAuthToken, credential) =>
+  api.post('/auth/webauthn/login/verify', { pre_auth_token: preAuthToken, credential })
+
 
 // ── Visitors ──────────────────────────────────────────────────────
 export const getVisitors     = (params) => api.get('/visitors', { params })
