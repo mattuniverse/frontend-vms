@@ -224,22 +224,67 @@ function LandingPage({ onVisitor, onStaff, onRetrieve }) {
 }
 
 // ─── STAFF LOGIN ──────────────────────────────────────────────────
-function StaffLogin({ onLogin, onBack }) {
+function StaffLogin({ onSignInWithPassword, onEnrollBiometric, onVerifyBiometric, onSuccess, onBack }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  // step: 'password' -> typing email/password
+  //       'biometric' -> waiting on the phone's Face ID/fingerprint prompt
+  //       'enroll'    -> first-time device, offer to set up biometrics
+  const [step, setStep] = useState("password");
+  const [preAuthToken, setPreAuthToken] = useState(null);
 
-  async function handleLogin(e) {
+  function friendlyError(err) {
+    const backendMsg = err?.response?.data?.detail;
+    if (typeof backendMsg === "string") return backendMsg;
+    if (err?.name === "NotAllowedError") return "Biometric confirmation was cancelled or timed out.";
+    return "Invalid credentials, or the server is unreachable.";
+  }
+
+  async function handlePasswordSubmit(e) {
     e.preventDefault(); setLoading(true); setError("");
-    // Always authenticate against the real backend — there is no local/offline
-    // fallback, so a login is only ever accepted if the server verifies it.
     try {
-      await onLogin({ email, password });
+      if (!onSignInWithPassword) throw new Error("Auth is not wired up");
+      const result = await onSignInWithPassword(email, password);
+      setPreAuthToken(result.preAuthToken);
+      if (result.status === "registration_required") {
+        setStep("enroll");
+        setLoading(false);
+      } else {
+        // Password confirmed — immediately trigger the biometric prompt,
+        // no extra click needed.
+        setStep("biometric");
+        await runBiometricVerify(result.preAuthToken);
+      }
     } catch (err) {
-      const backendMsg = err?.response?.data?.detail;
-      setError(typeof backendMsg === "string" ? backendMsg : "Invalid credentials, or the server is unreachable.");
+      setError(friendlyError(err));
+      setLoading(false);
+    }
+  }
+
+  async function runBiometricVerify(token) {
+    setLoading(true); setError("");
+    try {
+      const realUser = await onVerifyBiometric(token);
+      onSuccess(realUser);
+    } catch (err) {
+      setError(friendlyError(err));
+      setStep("password");
     } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleEnroll() {
+    setLoading(true); setError("");
+    try {
+      await onEnrollBiometric(preAuthToken, `${email} — device`);
+      // Enrolled — immediately proceed to verify with the credential just created.
+      setStep("biometric");
+      await runBiometricVerify(preAuthToken);
+    } catch (err) {
+      setError(friendlyError(err));
       setLoading(false);
     }
   }
@@ -254,47 +299,91 @@ function StaffLogin({ onLogin, onBack }) {
         </button>
 
         <div className="text-center mb-6">
-          <div className="inline-flex w-12 h-12 rounded-2xl bg-blue-600 items-center justify-center text-xl mb-2 shadow-lg shadow-blue-600/30">🔒</div>
-          <h2 className="text-xl font-bold text-white">Staff Sign In</h2>
-          <p className="text-slate-400 text-sm">Access your role-based dashboard</p>
+          <div className="inline-flex w-12 h-12 rounded-2xl bg-blue-600 items-center justify-center text-xl mb-2 shadow-lg shadow-blue-600/30">
+            {step === "password" ? "🔒" : "👆"}
+          </div>
+          <h2 className="text-xl font-bold text-white">
+            {step === "password" && "Staff Sign In"}
+            {step === "biometric" && "Confirm on Your Phone"}
+            {step === "enroll" && "Set Up Biometric Login"}
+          </h2>
+          <p className="text-slate-400 text-sm">
+            {step === "password" && "Access your role-based dashboard"}
+            {step === "biometric" && "Approve with Face ID or fingerprint to continue"}
+            {step === "enroll" && "This account needs a device registered before it can sign in"}
+          </p>
         </div>
 
         <div className="bg-white/[.07] backdrop-blur-md border border-white/10 rounded-2xl p-5 shadow-2xl">
           {error && <div className="bg-red-500/20 border border-red-500/30 text-red-300 text-xs rounded-lg px-3 py-2 mb-4">{error}</div>}
-          <form onSubmit={handleLogin} className="flex flex-col gap-3 mb-4">
-            <label className="block">
-              <span className="text-xs font-semibold text-slate-400 block mb-1">Email</span>
-              <input type="email" value={email} onChange={e => setEmail(e.target.value)} required placeholder="staff@vistahq.com"
-                className="w-full h-10 px-3 rounded-lg border border-white/10 bg-white/10 text-white placeholder:text-slate-500 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
-            </label>
-            <label className="block">
-              <span className="text-xs font-semibold text-slate-400 block mb-1">Password</span>
-              <input type="password" value={password} onChange={e => setPassword(e.target.value)} required placeholder="••••••••"
-                className="w-full h-10 px-3 rounded-lg border border-white/10 bg-white/10 text-white placeholder:text-slate-500 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
-            </label>
-            <button type="submit" disabled={loading}
-              className="w-full h-10 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-semibold rounded-lg text-sm transition-all mt-1">
-              {loading ? "Signing in…" : "Sign in"}
-            </button>
-          </form>
 
-          <div className="border-t border-white/10 pt-4">
-            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">Demo Accounts</p>
-            <div className="flex flex-col gap-1">
-              {DEMO_ACCOUNTS.map(u => (
-                <button key={u.email} onClick={() => { setEmail(u.email); setPassword(""); }}
-                  className="flex items-center gap-2.5 px-2 py-2 rounded-lg hover:bg-white/5 transition-colors text-left group">
-                  <div className="w-7 h-7 rounded-full bg-blue-600/30 text-blue-300 text-[10px] font-bold flex items-center justify-center flex-shrink-0">{u.initials}</div>
-                  <div className="flex-1">
-                    <p className="text-slate-300 text-xs font-medium group-hover:text-white">{u.name}</p>
-                    <p className="text-slate-500 text-[10px]">{u.role}</p>
-                  </div>
-                  <span className={cls("text-[10px] px-1.5 py-0.5 rounded font-semibold", roleColors[u.role] || "bg-gray-100 text-gray-600")}>{u.role.split(" ")[0]}</span>
+          {step === "password" && (
+            <>
+              <form onSubmit={handlePasswordSubmit} className="flex flex-col gap-3 mb-4">
+                <label className="block">
+                  <span className="text-xs font-semibold text-slate-400 block mb-1">Email</span>
+                  <input type="email" value={email} onChange={e => setEmail(e.target.value)} required placeholder="staff@vistahq.com"
+                    className="w-full h-10 px-3 rounded-lg border border-white/10 bg-white/10 text-white placeholder:text-slate-500 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+                </label>
+                <label className="block">
+                  <span className="text-xs font-semibold text-slate-400 block mb-1">Password</span>
+                  <input type="password" value={password} onChange={e => setPassword(e.target.value)} required placeholder="••••••••"
+                    className="w-full h-10 px-3 rounded-lg border border-white/10 bg-white/10 text-white placeholder:text-slate-500 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+                </label>
+                <button type="submit" disabled={loading}
+                  className="w-full h-10 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-semibold rounded-lg text-sm transition-all mt-1">
+                  {loading ? "Signing in…" : "Sign in"}
                 </button>
-              ))}
+              </form>
+
+              <div className="border-t border-white/10 pt-4">
+                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">Demo Accounts</p>
+                <div className="flex flex-col gap-1">
+                  {DEMO_ACCOUNTS.map(u => (
+                    <button key={u.email} onClick={() => { setEmail(u.email); setPassword(""); }}
+                      className="flex items-center gap-2.5 px-2 py-2 rounded-lg hover:bg-white/5 transition-colors text-left group">
+                      <div className="w-7 h-7 rounded-full bg-blue-600/30 text-blue-300 text-[10px] font-bold flex items-center justify-center flex-shrink-0">{u.initials}</div>
+                      <div className="flex-1">
+                        <p className="text-slate-300 text-xs font-medium group-hover:text-white">{u.name}</p>
+                        <p className="text-slate-500 text-[10px]">{u.role}</p>
+                      </div>
+                      <span className={cls("text-[10px] px-1.5 py-0.5 rounded font-semibold", roleColors[u.role] || "bg-gray-100 text-gray-600")}>{u.role.split(" ")[0]}</span>
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[10px] text-slate-500 mt-2">Click a name to fill the email, then type the password separately.</p>
+              </div>
+            </>
+          )}
+
+          {step === "biometric" && (
+            <div className="flex flex-col items-center gap-4 py-4">
+              <div className="w-12 h-12 rounded-full border-2 border-blue-500 border-t-transparent animate-spin" />
+              <p className="text-slate-400 text-sm text-center">
+                Waiting for confirmation on your phone…<br />
+                If nothing appears, check for a notification or open Vista VMS on your phone.
+              </p>
+              <button onClick={() => { setStep("password"); setLoading(false); }} className="text-slate-500 hover:text-white text-xs underline">
+                Cancel
+              </button>
             </div>
-            <p className="text-[10px] text-slate-500 mt-2">Click a name to fill the email, then type the password separately.</p>
-          </div>
+          )}
+
+          {step === "enroll" && (
+            <div className="flex flex-col items-center gap-4 py-2">
+              <p className="text-slate-300 text-sm text-center">
+                No device is registered for <span className="font-semibold">{email}</span> yet.
+                Register this device now — for cross-device sign-in later, do this on your own phone.
+              </p>
+              <button onClick={handleEnroll} disabled={loading}
+                className="w-full h-10 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-semibold rounded-lg text-sm transition-all">
+                {loading ? "Setting up…" : "Enable Face ID / Fingerprint"}
+              </button>
+              <button onClick={() => { setStep("password"); setLoading(false); }} className="text-slate-500 hover:text-white text-xs underline">
+                Cancel
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -1319,7 +1408,7 @@ function Topbar({ user, onLogout }) {
 }
 
 // ─── ROOT ─────────────────────────────────────────────────────────
-export default function VistaVMS({ apiMode = false, authUser = null, onLogin = null, onLogout = null }) {
+export default function VistaVMS({ apiMode = false, authUser = null, onSignInWithPassword = null, onEnrollBiometric = null, onVerifyBiometric = null, onLogout = null }) {
   const [screen, setScreen] = useState("landing"); // landing | visitor | staff-login | app | retrieve
   const [user, setUser] = useState(null);
   const [page, setPage] = useState("dashboard");
@@ -1351,24 +1440,17 @@ export default function VistaVMS({ apiMode = false, authUser = null, onLogin = n
     if (apiMode && screen === "app") { refreshRequests(); refreshVisitors(); }
   }, [apiMode, screen, refreshRequests, refreshVisitors]);
 
-  // Sync real auth state from parent (when apiMode=true)
-  useEffect(() => {
-    if (apiMode && authUser && screen !== "app") {
-      setUser(authUser);
-      setPage("dashboard");
-      setScreen("app");
-    }
-    if (apiMode && !authUser && screen === "app") {
-      setUser(null);
-      setScreen("landing");
-    }
-  }, [apiMode, authUser, screen]);
+  // NOTE: screen/user transitions are driven directly by handleLoginSuccess
+  // and handleLogout below — there is no longer a separate effect syncing
+  // from `authUser`, since that raced with handleLoginSuccess (both could
+  // flip `screen` to "app" independently, sometimes before `user` was fully
+  // populated, causing a render crash reading `user.role` on undefined).
 
-  const handleLogin = async (u) => {
-    // Always go through the real backend. If the API is unreachable this
-    // throws and StaffLogin shows the error — there is no local bypass.
-    if (!onLogin) throw new Error("Auth is not wired up");
-    const realUser = await onLogin(u.email, u.password);
+  const handleLoginSuccess = (realUser) => {
+    if (!realUser || !realUser.role) {
+      console.error("Login succeeded but user object is incomplete:", realUser);
+      return;
+    }
     setUser(realUser); setPage("dashboard"); setScreen("app");
   };
 
@@ -1380,7 +1462,21 @@ export default function VistaVMS({ apiMode = false, authUser = null, onLogin = n
   if (screen === "landing") return <LandingPage onVisitor={() => setScreen("visitor")} onStaff={() => setScreen("staff-login")} onRetrieve={() => setScreen("retrieve")} />;
   if (screen === "visitor") return <VisitorPortal onBack={() => setScreen("landing")} apiMode={apiMode} />;
   if (screen === "retrieve") return <RetrievePass onBack={() => setScreen("landing")} />;
-  if (screen === "staff-login") return <StaffLogin onLogin={handleLogin} onBack={() => setScreen("landing")} />;
+  if (screen === "staff-login") return (
+    <StaffLogin
+      onSignInWithPassword={onSignInWithPassword}
+      onEnrollBiometric={onEnrollBiometric}
+      onVerifyBiometric={onVerifyBiometric}
+      onSuccess={handleLoginSuccess}
+      onBack={() => setScreen("landing")}
+    />
+  );
+
+  if (screen === "app" && (!user || !user.role)) {
+    // Guards against any stale localStorage state or timing edge case —
+    // never render the dashboard shell with an incomplete user object.
+    return <LandingPage onVisitor={() => setScreen("visitor")} onStaff={() => setScreen("staff-login")} onRetrieve={() => setScreen("retrieve")} />;
+  }
 
   return (
     <div className="min-h-screen bg-gray-100 font-sans">
