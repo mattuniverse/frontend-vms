@@ -236,9 +236,13 @@ function StaffLogin({ onSignInWithPassword, onEnrollBiometric, onVerifyBiometric
   const [preAuthToken, setPreAuthToken] = useState(null);
 
   function friendlyError(err) {
+    // Log the real error so it's visible in the browser/Eruda console —
+    // otherwise a caught WebAuthn error never surfaces anywhere.
+    console.error("[StaffLogin]", err?.name, err?.message, err);
     const backendMsg = err?.response?.data?.detail;
     if (typeof backendMsg === "string") return backendMsg;
     if (err?.name === "NotAllowedError") return "Biometric confirmation was cancelled or timed out.";
+    if (err?.name) return `${err.name}: ${err.message || "Something went wrong during verification."}`;
     return "Invalid credentials, or the server is unreachable.";
   }
 
