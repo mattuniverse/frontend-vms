@@ -1369,43 +1369,82 @@ function AuditLog({ requests }) {
 }
 
 // ─── LAYOUT ───────────────────────────────────────────────────────
-function Sidebar({ page, setPage, user }) {
+function Sidebar({ page, setPage, user, open, onClose }) {
   const adminNav=[{id:"dashboard",label:"Dashboard",icon:"📊"},{id:"visitors",label:"Visitors",icon:"👥"},{id:"requests",label:"Visit Requests",icon:"📋"},{id:"security",label:"Security Desk",icon:"🔒"},{id:"analytics",label:"Analytics",icon:"📈"},{id:"audit",label:"Audit Log",icon:"📜"}];
   const guardNav=[{id:"dashboard",label:"Dashboard",icon:"📊"},{id:"visitors",label:"Visitors",icon:"👥"},{id:"security",label:"Security Desk",icon:"🔒"},{id:"audit",label:"Audit Log",icon:"📜"}];
   const recepNav=[{id:"dashboard",label:"Dashboard",icon:"📊"},{id:"visitors",label:"Visitors",icon:"👥"},{id:"requests",label:"Visit Requests",icon:"📋"},{id:"analytics",label:"Analytics",icon:"📈"},{id:"audit",label:"Audit Log",icon:"📜"}];
   const nav=user.role==="Administrator"?adminNav:user.role==="Security Guard"?guardNav:recepNav;
+
+  function handleNav(id) { setPage(id); onClose(); }
+
   return (
-    <aside className="fixed left-0 top-0 w-60 h-screen bg-[#0F172A] flex flex-col z-[100]">
-      <div className="h-14 flex items-center gap-2.5 px-4 border-b border-white/[.06]">
-        <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center text-white text-xs">🪪</div>
-        <span className="text-white font-bold text-sm">Vista VMS</span>
-      </div>
-      <div className="px-3 py-3 border-b border-white/[.06]">
-        <div className="flex items-center gap-2 px-2">
-          <div className="w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center text-white text-[10px] font-bold">{user.initials}</div>
-          <div><p className="text-white text-xs font-semibold">{user.name}</p><p className="text-slate-400 text-[10px]">{user.role}</p></div>
+    <>
+      {/* Backdrop — mobile only */}
+      {open && (
+        <div
+          className="fixed inset-0 bg-black/50 z-[110] lg:hidden"
+          onClick={onClose}
+        />
+      )}
+
+      {/* Sidebar panel */}
+      <aside className={cls(
+        "fixed left-0 top-0 w-60 h-screen bg-[#0F172A] flex flex-col z-[120] transition-transform duration-300",
+        // On large screens: always visible, no transform needed
+        // On mobile: slide in/out based on `open`
+        "lg:translate-x-0",
+        open ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
+      )}>
+        <div className="h-14 flex items-center gap-2.5 px-4 border-b border-white/[.06]">
+          <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center text-white text-xs">🪪</div>
+          <span className="text-white font-bold text-sm">Vista VMS</span>
+          {/* Close button — mobile only */}
+          <button onClick={onClose} className="ml-auto text-slate-400 hover:text-white lg:hidden text-lg leading-none">✕</button>
         </div>
-      </div>
-      <nav className="flex-1 overflow-y-auto py-2">
-        {nav.map(n=>(
-          <button key={n.id} onClick={()=>setPage(n.id)}
-            className={cls("flex items-center gap-2.5 mx-2 px-3 py-2 text-[13px] font-medium rounded-lg transition-colors text-left w-[calc(100%-16px)]",page===n.id?"bg-blue-600 text-white":"text-slate-400 hover:bg-white/5 hover:text-white")}>
-            <span>{n.icon}</span>{n.label}
-          </button>
-        ))}
-      </nav>
-      <div className="px-3 py-3 text-[10px] text-slate-500 border-t border-white/[.06]">Vista VMS · v1.1</div>
-    </aside>
+        <div className="px-3 py-3 border-b border-white/[.06]">
+          <div className="flex items-center gap-2 px-2">
+            <div className="w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center text-white text-[10px] font-bold">{user.initials}</div>
+            <div><p className="text-white text-xs font-semibold">{user.name}</p><p className="text-slate-400 text-[10px]">{user.role}</p></div>
+          </div>
+        </div>
+        <nav className="flex-1 overflow-y-auto py-2">
+          {nav.map(n=>(
+            <button key={n.id} onClick={()=>handleNav(n.id)}
+              className={cls("flex items-center gap-2.5 mx-2 px-3 py-2 text-[13px] font-medium rounded-lg transition-colors text-left w-[calc(100%-16px)]",page===n.id?"bg-blue-600 text-white":"text-slate-400 hover:bg-white/5 hover:text-white")}>
+              <span>{n.icon}</span>{n.label}
+            </button>
+          ))}
+        </nav>
+        <div className="px-3 py-3 text-[10px] text-slate-500 border-t border-white/[.06]">Vista VMS · v1.2</div>
+      </aside>
+    </>
   );
 }
 
-function Topbar({ user, onLogout }) {
+function Topbar({ user, onLogout, onMenuOpen }) {
   const roleColors={Administrator:"bg-purple-600","Security Guard":"bg-emerald-600",Receptionist:"bg-blue-600"};
   return (
-    <header className="fixed top-0 left-60 right-0 h-14 bg-white border-b border-gray-200 flex items-center gap-3 px-5 z-[50]">
+    <header className="fixed top-0 left-0 lg:left-60 right-0 h-14 bg-white border-b border-gray-200 flex items-center gap-3 px-4 z-[50]">
+      {/* Hamburger — mobile only */}
+      <button
+        onClick={onMenuOpen}
+        className="lg:hidden flex flex-col gap-1.5 p-1.5 rounded-md hover:bg-gray-100 transition-colors"
+        aria-label="Open menu"
+      >
+        <span className="block w-5 h-0.5 bg-gray-600 rounded"/>
+        <span className="block w-5 h-0.5 bg-gray-600 rounded"/>
+        <span className="block w-5 h-0.5 bg-gray-600 rounded"/>
+      </button>
+
+      {/* Logo — mobile only (hidden on desktop since sidebar shows it) */}
+      <div className="flex items-center gap-2 lg:hidden">
+        <div className="w-6 h-6 rounded-md bg-blue-600 flex items-center justify-center text-white text-xs">🪪</div>
+        <span className="font-bold text-sm text-gray-800">Vista VMS</span>
+      </div>
+
       <div className="flex-1"/>
-      <div className={cls("px-2.5 py-1 rounded-full text-white text-[11px] font-bold",roleColors[user.role]||"bg-gray-600")}>{user.role}</div>
-      <div className="text-sm font-medium text-gray-700">{user.name}</div>
+      <div className={cls("px-2.5 py-1 rounded-full text-white text-[11px] font-bold hidden sm:block",roleColors[user.role]||"bg-gray-600")}>{user.role}</div>
+      <div className="text-sm font-medium text-gray-700 hidden sm:block">{user.name}</div>
       <button onClick={onLogout} className="px-3 py-1.5 text-xs font-medium text-gray-500 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">Sign Out</button>
     </header>
   );
@@ -1416,6 +1455,7 @@ export default function VistaVMS({ apiMode = false, authUser = null, onSignInWit
   const [screen, setScreen] = useState("landing"); // landing | visitor | staff-login | app | retrieve
   const [user, setUser] = useState(null);
   const [page, setPage] = useState("dashboard");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [visitors, setVisitors] = useState(SEED_VISITORS);
   const [requests, setRequests] = useState(SEED_REQUESTS);
 
@@ -1440,8 +1480,27 @@ export default function VistaVMS({ apiMode = false, authUser = null, onSignInWit
     }
   }, [apiMode]);
 
+  // Initial fetch when the app screen mounts
   useEffect(() => {
     if (apiMode && screen === "app") { refreshRequests(); refreshVisitors(); }
+  }, [apiMode, screen, refreshRequests, refreshVisitors]);
+
+  // Re-fetch whenever the user switches back to this tab or returns to the app
+  // from the phone home screen. Fixes the stale-data bug where a laptop left
+  // open on the dashboard showed different counts than a phone opened fresh.
+  useEffect(() => {
+    if (!apiMode || screen !== "app") return;
+    function handleVisibilityChange() {
+      if (document.visibilityState === "visible") {
+        refreshRequests(); refreshVisitors();
+      }
+    }
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("focus", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", handleVisibilityChange);
+    };
   }, [apiMode, screen, refreshRequests, refreshVisitors]);
 
   // NOTE: screen/user transitions are driven directly by handleLoginSuccess
@@ -1467,6 +1526,9 @@ export default function VistaVMS({ apiMode = false, authUser = null, onSignInWit
   if (screen === "visitor") return <VisitorPortal onBack={() => setScreen("landing")} apiMode={apiMode} />;
   if (screen === "retrieve") return <RetrievePass onBack={() => setScreen("landing")} />;
   if (screen === "staff-login") return (
+    // BUG #5 FIX: onBack must be passed here so the "← Back" button inside
+    // StaffLogin can navigate back to the landing page. Without it, clicking
+    // "← Back" called undefined and silently did nothing.
     <StaffLogin
       onSignInWithPassword={onSignInWithPassword}
       onEnrollBiometric={onEnrollBiometric}
@@ -1484,9 +1546,9 @@ export default function VistaVMS({ apiMode = false, authUser = null, onSignInWit
 
   return (
     <div className="min-h-screen bg-gray-100 font-sans">
-      <Sidebar page={page} setPage={setPage} user={user} />
-      <Topbar user={user} onLogout={handleLogout} />
-      <main className="ml-60 mt-14 min-h-[calc(100vh-3.5rem)] p-6">
+      <Sidebar page={page} setPage={setPage} user={user} open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      <Topbar user={user} onLogout={handleLogout} onMenuOpen={() => setSidebarOpen(true)} />
+      <main className="lg:ml-60 mt-14 min-h-[calc(100vh-3.5rem)] p-4 lg:p-6">
         {page === "dashboard" && <Dashboard requests={requests} visitors={visitors} user={user} />}
         {page === "visitors" && <VisitorsPage visitors={visitors} setVisitors={setVisitors} user={user} apiMode={apiMode} refreshVisitors={refreshVisitors} />}
         {page === "requests" && <VisitRequestsPage requests={requests} setRequests={setRequests} user={user} apiMode={apiMode} refreshRequests={refreshRequests} />}
