@@ -72,4 +72,14 @@ export const lookupByQR        = (qrRef)        => api.get(`/visit-requests/by-q
 export const getAuditLog        = (params) => api.get('/audit-log', { params })
 export const getAnalyticsSummary = ()      => api.get('/analytics/summary')
 
+// ── Restricted Areas ──────────────────────────────────────────────
+export const getRestrictedAreas    = ()              => api.get('/restricted-areas')
+export const createRestrictedArea  = (data)          => api.post('/restricted-areas', data)
+export const deleteRestrictedArea  = (id)            => api.delete(`/restricted-areas/${id}`)
+export const grantRestrictedAccess = (areaId, data)  => api.post(`/restricted-areas/${areaId}/grant`, data)
+export const issueRestrictedBadge  = (data)          => api.post('/restricted-areas/badge/issue', data)
+export const confirmRestrictedEntry= (data)          => api.post('/restricted-areas/badge/confirm-entry', data)
+export const confirmRestrictedExit = (data)          => api.post('/restricted-areas/badge/confirm-exit', data)
+export const getAreaOccupants      = (areaId)        => api.get(`/restricted-areas/${areaId}/occupants`)
+
 export default api
