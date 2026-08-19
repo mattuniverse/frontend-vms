@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { startAuthentication, startRegistration } from '@simplewebauthn/browser'
 import {
   login as apiLogin,
@@ -8,11 +8,35 @@ import {
   webauthnRegisterOptions,
   webauthnRegisterVerify,
 } from '../services/api'
+import api from '../services/api'
 
 export function useAuth() {
   const [user, setUser] = useState(() => {
     try { return JSON.parse(localStorage.getItem('vms_user')) } catch { return null }
   })
+
+  // URL BYPASS FIX: Verify the stored token is still valid with the backend
+  // on every page load. Without this, anyone can open DevTools, paste a user
+  // object into localStorage, and land directly on the dashboard — the app
+  // never checked if a real session token existed or was still valid.
+  useEffect(() => {
+    const token = localStorage.getItem('vms_token')
+    if (!token) {
+      // No token at all — clear any stale user object and stay logged out
+      localStorage.removeItem('vms_user')
+      setUser(null)
+      return
+    }
+    // Probe a protected endpoint. If the token is expired, tampered, or
+    // the account was disabled, the backend returns 401 and our axios
+    // interceptor in api.js clears localStorage and reloads — so the user
+    // lands back on the login screen automatically.
+    api.get('/auth/me').catch(() => {
+      localStorage.removeItem('vms_token')
+      localStorage.removeItem('vms_user')
+      setUser(null)
+    })
+  }, [])
 
   // Step 1: email + password. Returns a status object the UI branches on —
   // it does NOT log the user in by itself.
