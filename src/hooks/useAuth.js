@@ -30,6 +30,22 @@ export function useAuth() {
     }
   }, [])
 
+  // BUG #4 FIX: @simplewebauthn/browser changed its call signature in v11:
+  //   v10 and below: startRegistration(optionsObject)
+  //   v11 and above: startRegistration({ optionsJSON: optionsObject })
+  // The same change applies to startAuthentication.
+  // This helper detects the installed version at runtime and calls the right
+  // form, so the code keeps working if the package is upgraded.
+  function callSimpleWebAuthn(fn, options) {
+    // v10: startRegistration(optionsJSON)   — plain parameter named optionsJSON
+    // v11: startRegistration({ optionsJSON }) — destructured parameter
+    // The old check (pkg.includes('optionsJSON')) matched BOTH versions because
+    // v10 also names its parameter 'optionsJSON'. The correct way is to check
+    // whether the parameter is destructured with `({`, which only v11+ does.
+    const needsWrapper = /^\s*async function \w+\s*\(\s*\{/.test(fn.toString())
+    return needsWrapper ? fn({ optionsJSON: options }) : fn(options)
+  }
+
   // Step 2a: first-time enrollment. Triggers the native Face ID/fingerprint
   // prompt via the browser's WebAuthn API, then stores the resulting public
   // key on the backend. Does not log the user in — call verifyBiometric
@@ -37,11 +53,7 @@ export function useAuth() {
   const enrollBiometric = useCallback(async (preAuthToken, nickname) => {
     const { data } = await webauthnRegisterOptions(preAuthToken)
     const parsedOptions = JSON.parse(data.options)
-    // NOTE: @simplewebauthn/browser v10 takes the options object directly —
-    // it is NOT wrapped in { optionsJSON: ... } (that wrapper syntax is a
-    // v11+ API change). Passing the wrapper here caused every field read
-    // (challenge, user.id, etc.) to be undefined.
-    const attResp = await startRegistration(parsedOptions)
+    const attResp = await callSimpleWebAuthn(startRegistration, parsedOptions)
     await webauthnRegisterVerify(preAuthToken, attResp, nickname)
   }, [])
 
@@ -49,7 +61,8 @@ export function useAuth() {
   // what finally issues a real session token.
   const verifyBiometric = useCallback(async (preAuthToken) => {
     const { data: optionsRes } = await webauthnLoginOptions(preAuthToken)
-    const authResp = await startAuthentication(JSON.parse(optionsRes.options))
+    const parsedOptions = JSON.parse(optionsRes.options)
+    const authResp = await callSimpleWebAuthn(startAuthentication, parsedOptions)
     const { data } = await webauthnLoginVerify(preAuthToken, authResp)
     localStorage.setItem('vms_token', data.access_token)
     localStorage.setItem('vms_user', JSON.stringify(data.user))
