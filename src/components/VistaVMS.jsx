@@ -761,6 +761,17 @@ function Kpi({ label, value, icon, color = "bg-blue-50 text-blue-600", trend }) 
   );
 }
 
+// ─── ACCESS DENIED ────────────────────────────────────────────────
+function AccessDenied() {
+  return (
+    <div className="flex flex-col items-center justify-center h-64 gap-3 text-center">
+      <div className="text-5xl">🚫</div>
+      <h2 className="text-lg font-bold text-gray-800">Access Denied</h2>
+      <p className="text-sm text-gray-500">You don't have permission to view this page.</p>
+    </div>
+  );
+}
+
 // ─── DASHBOARD ────────────────────────────────────────────────────
 function Dashboard({ requests, visitors, user }) {
   const pending = requests.filter(r => r.approval_status === "Pending").length;
@@ -1549,12 +1560,23 @@ export default function VistaVMS({ apiMode = false, authUser = null, onSignInWit
       <Sidebar page={page} setPage={setPage} user={user} open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
       <Topbar user={user} onLogout={handleLogout} onMenuOpen={() => setSidebarOpen(true)} />
       <main className="lg:ml-60 mt-14 min-h-[calc(100vh-3.5rem)] p-4 lg:p-6">
+        {/* URL BYPASS FIX: every page checks the user role before rendering.
+             A Security Guard who manually sets page="requests" in React DevTools
+             or localStorage will see "Access denied" instead of the page. */}
         {page === "dashboard" && <Dashboard requests={requests} visitors={visitors} user={user} />}
         {page === "visitors" && <VisitorsPage visitors={visitors} setVisitors={setVisitors} user={user} apiMode={apiMode} refreshVisitors={refreshVisitors} />}
-        {page === "requests" && <VisitRequestsPage requests={requests} setRequests={setRequests} user={user} apiMode={apiMode} refreshRequests={refreshRequests} />}
-        {page === "security" && <SecurityDesk requests={requests} setRequests={setRequests} apiMode={apiMode} refreshRequests={refreshRequests} />}
-        {page === "analytics" && <Analytics requests={requests} visitors={visitors} user={user} />}
-        {page === "audit" && <AuditLog requests={requests} />}
+        {page === "requests" && (["Administrator","Receptionist"].includes(user.role)
+          ? <VisitRequestsPage requests={requests} setRequests={setRequests} user={user} apiMode={apiMode} refreshRequests={refreshRequests} />
+          : <AccessDenied />)}
+        {page === "security" && (["Administrator","Security Guard"].includes(user.role)
+          ? <SecurityDesk requests={requests} setRequests={setRequests} apiMode={apiMode} refreshRequests={refreshRequests} />
+          : <AccessDenied />)}
+        {page === "analytics" && (["Administrator","Receptionist"].includes(user.role)
+          ? <Analytics requests={requests} visitors={visitors} user={user} />
+          : <AccessDenied />)}
+        {page === "audit" && (["Administrator"].includes(user.role)
+          ? <AuditLog requests={requests} />
+          : <AccessDenied />)}
       </main>
     </div>
   );
