@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
-import { getVisitRequests, createVisitRequest, approveRequest, checkInVisitor, checkOutVisitor, getVisitors, createVisitor } from "../services/api";
+import { getVisitRequests, createVisitRequest, approveRequest, checkInVisitor, checkOutVisitor, getVisitors, createVisitor, toggleBlockVisitor, getAuditLog, getAnalyticsSummary, getRestrictedAreas, createRestrictedArea, deleteRestrictedArea, grantRestrictedAccess, issueRestrictedBadge, confirmRestrictedEntry, confirmRestrictedExit, getAreaOccupants } from "../services/api";
 import {
   BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend
@@ -22,10 +22,6 @@ const SEED_VISITORS = [];
 
 const SEED_REQUESTS = [];
 
-const ANALYTICS_WEEKLY = [];
-const ANALYTICS_MONTHLY = [];
-const PURPOSE_DIST = [];
-const HOUR_DIST = [];
 
 // ─── UTILS ────────────────────────────────────────────────────────
 function genId(p) { return `${p}${Date.now().toString(36).toUpperCase()}`; }
@@ -773,6 +769,35 @@ function AccessDenied() {
 }
 
 // ─── DASHBOARD ────────────────────────────────────────────────────
+// Derives last-7-days bar chart data from the live requests array.
+// No API call needed — requests are already loaded on the dashboard.
+function DashboardWeeklyChart({ requests }) {
+  const data = useMemo(() => {
+    const days = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const iso = d.toISOString().split("T")[0];
+      const label = d.toLocaleDateString("en-PH", { weekday: "short" });
+      const visits = requests.filter(r => r.visit_date === iso).length;
+      days.push({ day: label, visits });
+    }
+    return days;
+  }, [requests]);
+
+  return (
+    <ResponsiveContainer width="100%" height={140}>
+      <BarChart data={data} barSize={14}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+        <XAxis dataKey="day" tick={{ fontSize: 11 }} />
+        <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+        <Tooltip contentStyle={{ fontSize: 12 }} />
+        <Bar dataKey="visits" fill="#2563EB" radius={[3,3,0,0]} name="Visits" />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
 function Dashboard({ requests, visitors, user }) {
   const pending = requests.filter(r => r.approval_status === "Pending").length;
   const checkedIn = requests.filter(r => r.status === "Checked In").length;
@@ -790,15 +815,7 @@ function Dashboard({ requests, visitors, user }) {
       </div>
       <div className="bg-white rounded-[12px] border border-gray-200 p-4">
         <h3 className="font-semibold text-gray-900 text-sm mb-3">This week</h3>
-        <ResponsiveContainer width="100%" height={140}>
-          <BarChart data={ANALYTICS_WEEKLY} barSize={14}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-            <XAxis dataKey="day" tick={{ fontSize: 11 }} />
-            <YAxis tick={{ fontSize: 11 }} />
-            <Tooltip contentStyle={{ fontSize: 12 }} />
-            <Bar dataKey="visits" fill="#2563EB" radius={[3,3,0,0]} name="Visits" />
-          </BarChart>
-        </ResponsiveContainer>
+        <DashboardWeeklyChart requests={requests} />
       </div>
       <div className="bg-white rounded-[12px] border border-gray-200 p-4">
         <h3 className="font-semibold text-gray-900 text-sm mb-3">Recent requests</h3>
@@ -818,60 +835,306 @@ function Dashboard({ requests, visitors, user }) {
 }
 
 // ─── VISITORS PAGE ────────────────────────────────────────────────
-function VisitorsPage({ visitors, setVisitors, user, apiMode = false, refreshVisitors = async () => {} }) {
-  const [q, setQ] = useState(""); const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ full_name:"",company:"",phone:"",email:"",id_type:"Driver's License",id_number:"" });
-  const [saving, setSaving] = useState(false);
+function VisitorDetailDrawer({ visitor, requests, onClose, onBlock, user }) {
+  if (!visitor) return null;
+
+  // All visit history for this visitor
+  const history = requests.filter(r =>
+    r.visitor_id === visitor.id ||
+    r.visitor_name?.toLowerCase() === visitor.full_name?.toLowerCase()
+  ).sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
+
+  const lastVisit  = history[0];
+  const totalVisits = history.length;
+  const canBlock = ["Administrator","Receptionist"].includes(user.role);
+
+  function fmt(ts) {
+    if (!ts) return "—";
+    return new Date(ts).toLocaleString("en-PH", { month:"short", day:"numeric", year:"numeric", hour:"2-digit", minute:"2-digit" });
+  }
+
+  const statusColors = {
+    "Checked In":  "text-emerald-600 bg-emerald-50",
+    "Checked Out": "text-gray-500 bg-gray-100",
+    "Pending Arrival": "text-blue-600 bg-blue-50",
+    "Rejected":    "text-red-600 bg-red-50",
+    "Pending":     "text-amber-600 bg-amber-50",
+  };
+
+  return (
+    <div className="fixed inset-0 z-[200] flex justify-end">
+      {/* Backdrop */}
+      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
+      {/* Drawer */}
+      <div className="relative w-full max-w-md bg-white h-full shadow-2xl flex flex-col overflow-hidden animate-slide-in">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+          <h2 className="font-bold text-gray-900 text-base">Visitor Profile</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">✕</button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-5">
+          {/* Identity card */}
+          <div className="flex items-center gap-4">
+            <div className="w-14 h-14 rounded-full bg-blue-600 flex items-center justify-center text-white text-xl font-bold shrink-0">
+              {visitor.full_name?.charAt(0).toUpperCase()}
+            </div>
+            <div className="flex-1 min-w-0">
+              <h3 className="font-bold text-gray-900 text-lg leading-tight">{visitor.full_name}</h3>
+              {visitor.company && <p className="text-sm text-gray-500">{visitor.company}</p>}
+              <div className="flex items-center gap-2 mt-1">
+                <Badge status={visitor.status} />
+                {totalVisits > 0 && (
+                  <span className="text-xs text-gray-400">{totalVisits} visit{totalVisits !== 1 ? "s" : ""}</span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Contact & ID */}
+          <div className="bg-gray-50 rounded-[10px] p-4 flex flex-col gap-3">
+            <p className="text-xs font-bold text-gray-500 uppercase tracking-wider">Contact & ID</p>
+            <div className="grid grid-cols-2 gap-3">
+              {[
+                { label: "Phone",    value: visitor.phone   || "—" },
+                { label: "Email",    value: visitor.email   || "—" },
+                { label: "ID Type",  value: visitor.id_type || "—" },
+                { label: "ID No.",   value: visitor.id_number || "—" },
+                { label: "Registered", value: fmt(visitor.created_at) },
+              ].map(f => (
+                <div key={f.label} className="flex flex-col gap-0.5">
+                  <span className="text-[10px] text-gray-400 uppercase tracking-wider">{f.label}</span>
+                  <span className="text-xs font-medium text-gray-800 break-all">{f.value}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Last visit summary */}
+          {lastVisit && (
+            <div className="bg-blue-50 border border-blue-100 rounded-[10px] p-4 flex flex-col gap-2">
+              <p className="text-xs font-bold text-blue-700 uppercase tracking-wider">Last Visit</p>
+              <div className="grid grid-cols-2 gap-3">
+                {[
+                  { label: "Date",      value: lastVisit.visit_date || "—" },
+                  { label: "Purpose",   value: lastVisit.purpose    || "—" },
+                  { label: "Host",      value: lastVisit.host_name  || "—" },
+                  { label: "Badge",     value: lastVisit.badge_number || "—" },
+                  { label: "Time In",   value: fmt(lastVisit.checked_in_at) },
+                  { label: "Time Out",  value: fmt(lastVisit.checked_out_at) },
+                ].map(f => (
+                  <div key={f.label} className="flex flex-col gap-0.5">
+                    <span className="text-[10px] text-blue-500 uppercase tracking-wider">{f.label}</span>
+                    <span className="text-xs font-medium text-blue-900">{f.value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Full visit history */}
+          {history.length > 0 && (
+            <div className="flex flex-col gap-2">
+              <p className="text-xs font-bold text-gray-500 uppercase tracking-wider">Visit History</p>
+              {history.map((r, i) => (
+                <div key={r.id || i} className="bg-white border border-gray-100 rounded-[10px] p-3 flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-gray-800">{r.visit_date}</span>
+                    <span className={cls("px-2 py-0.5 rounded-full text-[10px] font-semibold",
+                      statusColors[r.status] || "bg-gray-100 text-gray-500")}>
+                      {r.status}
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    <span className="font-medium">Purpose:</span> {r.purpose || "—"}
+                  </p>
+                  <p className="text-xs text-gray-500">
+                    <span className="font-medium">Host:</span> {r.host_name || "—"}
+                  </p>
+                  {r.badge_number && (
+                    <p className="text-xs text-gray-500">
+                      <span className="font-medium">Badge:</span> {r.badge_number}
+                    </p>
+                  )}
+                  <div className="grid grid-cols-2 gap-x-3 mt-0.5">
+                    <p className="text-[10px] text-gray-400">In: {fmt(r.checked_in_at)}</p>
+                    <p className="text-[10px] text-gray-400">Out: {fmt(r.checked_out_at)}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {history.length === 0 && (
+            <p className="text-xs text-gray-400 text-center py-4">No visit history yet.</p>
+          )}
+        </div>
+
+        {/* Footer actions */}
+        {canBlock && (
+          <div className="px-5 py-4 border-t border-gray-100">
+            <button onClick={() => onBlock(visitor.id)}
+              className={cls(
+                "w-full py-2.5 rounded-xl text-sm font-semibold transition-colors",
+                visitor.status === "Blocked"
+                  ? "bg-green-50 text-green-700 hover:bg-green-100 border border-green-200"
+                  : "bg-red-50 text-red-700 hover:bg-red-100 border border-red-200"
+              )}>
+              {visitor.status === "Blocked" ? "✅ Unblock Visitor" : "🚫 Block Visitor"}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function VisitorsPage({ visitors, setVisitors, user, requests = [], apiMode = false, refreshVisitors = async () => {} }) {
+  const [q, setQ]             = useState("");
+  const [open, setOpen]       = useState(false);
+  const [selected, setSelected] = useState(null);
+  const [form, setForm]       = useState({ full_name:"",company:"",phone:"",email:"",id_type:"Driver's License",id_number:"" });
+  const [saving, setSaving]   = useState(false);
   const [saveError, setSaveError] = useState("");
   const canAdd = user.role !== "Security Guard";
-  const filtered = visitors.filter(v => v.full_name.toLowerCase().includes(q.toLowerCase()) || v.company?.toLowerCase().includes(q.toLowerCase()));
+
+  // Status filter
+  const [statusFilter, setStatusFilter] = useState("All");
+
+  const filtered = visitors.filter(v => {
+    const matchQ = v.full_name.toLowerCase().includes(q.toLowerCase()) ||
+                   v.company?.toLowerCase().includes(q.toLowerCase()) ||
+                   v.email?.toLowerCase().includes(q.toLowerCase()) ||
+                   v.phone?.includes(q) ||
+                   v.id_number?.includes(q);
+    const matchStatus = statusFilter === "All" || v.status === statusFilter;
+    return matchQ && matchStatus;
+  });
+
+  // Auto-mark visitor as Inactive after check-out — derive from requests
+  // A visitor is "currently inside" if their latest request status is "Checked In"
+  // Otherwise they are Active (registered) or Blocked.
+  // We show a computed presence status in the table alongside the account status.
+  function getPresence(visitor) {
+    const vReqs = requests.filter(r =>
+      r.visitor_id === visitor.id ||
+      r.visitor_name?.toLowerCase() === visitor.full_name?.toLowerCase()
+    );
+    if (vReqs.length === 0) return null;
+    const latest = vReqs.sort((a,b) => (b.created_at||"").localeCompare(a.created_at||""))[0];
+    if (latest.status === "Checked In")  return "Inside";
+    if (latest.status === "Checked Out") return "Visited";
+    return null;
+  }
 
   async function submit() {
     if (!form.full_name||!form.id_number) return;
-    setSaveError("");
-    setSaving(true);
+    setSaveError(""); setSaving(true);
     try {
       await createVisitor(form);
       await refreshVisitors();
-      setOpen(false); setForm({full_name:"",company:"",phone:"",email:"",id_type:"Driver's License",id_number:""});
+      setOpen(false);
+      setForm({full_name:"",company:"",phone:"",email:"",id_type:"Driver's License",id_number:""});
     } catch (e) {
       console.error("Failed to save visitor", e);
       setSaveError("Failed to save visitor. Please try again.");
-    } finally {
-      setSaving(false);
-    }
+    } finally { setSaving(false); }
   }
+
+  async function handleBlock(id) {
+    try { await toggleBlockVisitor(id); await refreshVisitors(); setSelected(null); }
+    catch (e) { console.error("Failed to toggle block", e); }
+  }
+
   return (
     <div className="flex flex-col gap-5">
       <div className="flex items-start justify-between">
-        <div><h1 className="text-xl font-bold text-gray-900">Visitors</h1><p className="text-sm text-gray-500">All registered visitors</p></div>
-        {canAdd && <Btn onClick={()=>setOpen(true)}>+ New Visitor</Btn>}
+        <div>
+          <h1 className="text-xl font-bold text-gray-900">Visitors</h1>
+          <p className="text-sm text-gray-500">All registered visitors — click a row to view details</p>
+        </div>
+        {canAdd && <Btn onClick={() => setOpen(true)}>+ New Visitor</Btn>}
       </div>
-      <div className="bg-white rounded-[12px] border border-gray-200 p-3">
-        <input className="w-full h-9 pl-4 pr-3 rounded-lg border border-gray-200 text-sm outline-none focus:ring-2 focus:ring-blue-200"
-          placeholder="Search by name or company…" value={q} onChange={e=>setQ(e.target.value)} />
+
+      {/* Search + filter bar */}
+      <div className="flex gap-2 flex-wrap">
+        <div className="flex-1 min-w-[180px] bg-white rounded-[10px] border border-gray-200 px-3 flex items-center gap-2">
+          <span className="text-gray-400 text-sm">🔍</span>
+          <input className="flex-1 h-9 text-sm outline-none bg-transparent"
+            placeholder="Search name, company, email, phone, ID…"
+            value={q} onChange={e => setQ(e.target.value)} />
+          {q && <button onClick={() => setQ("")} className="text-gray-300 hover:text-gray-500 text-sm">✕</button>}
+        </div>
+        {["All","Active","Blocked"].map(s => (
+          <button key={s} onClick={() => setStatusFilter(s)}
+            className={cls("px-3 py-1 rounded-full text-xs font-medium transition-colors border",
+              statusFilter === s ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50")}>
+            {s}
+          </button>
+        ))}
       </div>
+
       <div className="bg-white rounded-[12px] border border-gray-200 overflow-hidden">
         <table className="w-full text-sm">
-          <thead><tr className="text-left text-xs uppercase text-gray-500 border-b border-gray-200 bg-gray-50">
-            <th className="px-5 py-3">Name</th><th className="px-5 py-3">Company</th><th className="px-5 py-3">ID</th><th className="px-5 py-3">Status</th><th className="px-5 py-3">Registered</th>
-          </tr></thead>
+          <thead>
+            <tr className="text-left text-xs uppercase text-gray-500 border-b border-gray-200 bg-gray-50">
+              <th className="px-5 py-3">Name</th>
+              <th className="px-5 py-3">Company</th>
+              <th className="px-5 py-3">ID</th>
+              <th className="px-5 py-3">Account</th>
+              <th className="px-5 py-3">Presence</th>
+              <th className="px-5 py-3">Registered</th>
+            </tr>
+          </thead>
           <tbody>
-            {filtered.length===0&&<tr><td colSpan={5} className="px-5 py-12 text-center text-gray-400">No visitors found</td></tr>}
-            {filtered.map(v=>(
-              <tr key={v.id} className="border-b border-gray-100 last:border-0 hover:bg-gray-50">
-                <td className="px-5 py-3 font-medium text-gray-900">{v.full_name}</td>
-                <td className="px-5 py-3 text-gray-500">{v.company||"—"}</td>
-                <td className="px-5 py-3 text-gray-500 text-xs">{v.id_type} · {v.id_number}</td>
-                <td className="px-5 py-3"><Badge status={v.status}/></td>
-                <td className="px-5 py-3 text-gray-400 text-xs">{v.created_at}</td>
-              </tr>
-            ))}
+            {filtered.length === 0 && (
+              <tr><td colSpan={6} className="px-5 py-12 text-center text-gray-400">No visitors found</td></tr>
+            )}
+            {filtered.map(v => {
+              const presence = getPresence(v);
+              return (
+                <tr key={v.id}
+                  onClick={() => setSelected(v)}
+                  className="border-b border-gray-100 last:border-0 hover:bg-blue-50 cursor-pointer transition-colors">
+                  <td className="px-5 py-3">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center text-white text-[11px] font-bold shrink-0">
+                        {v.full_name?.charAt(0).toUpperCase()}
+                      </div>
+                      <span className="font-medium text-gray-900">{v.full_name}</span>
+                    </div>
+                  </td>
+                  <td className="px-5 py-3 text-gray-500">{v.company || "—"}</td>
+                  <td className="px-5 py-3 text-gray-500 text-xs">{v.id_type} · {v.id_number}</td>
+                  <td className="px-5 py-3"><Badge status={v.status} /></td>
+                  <td className="px-5 py-3">
+                    {presence === "Inside"  && <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold text-emerald-600 bg-emerald-50">🟢 Inside</span>}
+                    {presence === "Visited" && <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold text-gray-500 bg-gray-100">Visited</span>}
+                    {!presence && <span className="text-gray-300 text-xs">—</span>}
+                  </td>
+                  <td className="px-5 py-3 text-gray-400 text-xs">
+                    {v.created_at ? new Date(v.created_at).toLocaleDateString("en-PH", {month:"short",day:"numeric",year:"numeric"}) : "—"}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
-      <Dialog open={open} title="Register New Visitor" onClose={()=>setOpen(false)}
-        footer={<><Btn variant="ghost" onClick={()=>setOpen(false)}>Cancel</Btn><Btn onClick={submit} disabled={saving}>{saving ? "Saving..." : "Save Visitor"}</Btn></>}>
+
+      {/* Visitor detail drawer */}
+      {selected && (
+        <VisitorDetailDrawer
+          visitor={selected}
+          requests={requests}
+          user={user}
+          onClose={() => setSelected(null)}
+          onBlock={handleBlock}
+        />
+      )}
+
+      {/* Register new visitor dialog */}
+      <Dialog open={open} title="Register New Visitor" onClose={() => setOpen(false)}
+        footer={<><Btn variant="ghost" onClick={() => setOpen(false)}>Cancel</Btn><Btn onClick={submit} disabled={saving}>{saving ? "Saving..." : "Save Visitor"}</Btn></>}>
         {saveError && <p className="text-xs text-red-500 mb-2">{saveError}</p>}
         <Input label="Full Name" value={form.full_name} onChange={e=>setForm(p=>({...p,full_name:e.target.value}))} required />
         <Input label="Company" value={form.company} onChange={e=>setForm(p=>({...p,company:e.target.value}))} />
@@ -1256,82 +1519,141 @@ function SecurityDesk({ requests, setRequests, apiMode = false, refreshRequests 
 }
 
 // ─── ANALYTICS ────────────────────────────────────────────────────
-function Analytics({ requests, visitors, user }) {
-  const total=requests.length,checkedIn=requests.filter(r=>r.status==="Checked In").length,pending=requests.filter(r=>r.approval_status==="Pending").length,
-        rejected=requests.filter(r=>r.approval_status==="Rejected").length,approved=requests.filter(r=>r.approval_status==="Approved").length;
+function Analytics({ requests, visitors, user, apiMode = false }) {
+  const [summary, setSummary] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!apiMode) return;
+    setLoading(true);
+    getAnalyticsSummary()
+      .then(res => setSummary(res.data))
+      .catch(e => console.error("Failed to load analytics", e))
+      .finally(() => setLoading(false));
+  }, [apiMode]);
+
+  // Derive totals from live requests (always available)
+  const total    = requests.length;
+  const checkedIn= requests.filter(r => r.status === "Checked In").length;
+  const pending  = requests.filter(r => r.approval_status === "Pending").length;
+  const rejected = requests.filter(r => r.approval_status === "Rejected").length;
+  const approved = requests.filter(r => r.approval_status === "Approved").length;
+
+  // Use API data when available, fall back to client-derived data
+  const weeklyData  = summary?.weekly_traffic  || [];
+  const monthlyData = summary?.monthly_traffic || [];
+  const purposeData = summary?.purpose_dist    || [];
+  const hourData    = summary?.hour_dist       || [];
+
+  const statusBreakdown = [
+    { label: "Approved", count: approved, pct: total ? Math.round(approved/total*100) : 0, color: "bg-green-500" },
+    { label: "Pending",  count: pending,  pct: total ? Math.round(pending/total*100)  : 0, color: "bg-yellow-500" },
+    { label: "Rejected", count: rejected, pct: total ? Math.round(rejected/total*100) : 0, color: "bg-red-500" },
+  ];
+
   return (
     <div className="flex flex-col gap-6">
-      <div><h1 className="text-xl font-bold text-gray-900">Analytics</h1><p className="text-sm text-gray-500">{user.role === "Administrator" ? "Full-system overview" : "Your desk analytics"}</p></div>
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <Kpi label="Total Visitors" value={visitors.length} icon="👥" color="bg-blue-50 text-blue-600" trend={12} />
-        <Kpi label="Total Requests" value={total} icon="📋" color="bg-violet-50 text-violet-600" />
-        <Kpi label="Currently Inside" value={checkedIn} icon="🏢" color="bg-emerald-50 text-emerald-600" />
-        <Kpi label="Pending Approval" value={pending} icon="⏳" color="bg-amber-50 text-amber-600" />
+      <div>
+        <h1 className="text-xl font-bold text-gray-900">Analytics</h1>
+        <p className="text-sm text-gray-500">{user.role === "Administrator" ? "Full-system overview" : "Your desk analytics"}</p>
       </div>
-      <div className="grid grid-cols-2 gap-4">
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <Kpi label="Total Visitors"   value={visitors.length} icon="👥" color="bg-blue-50 text-blue-600" />
+        <Kpi label="Total Requests"   value={total}           icon="📋" color="bg-violet-50 text-violet-600" />
+        <Kpi label="Currently Inside" value={checkedIn}       icon="🏢" color="bg-emerald-50 text-emerald-600" />
+        <Kpi label="Pending Approval" value={pending}         icon="⏳" color="bg-amber-50 text-amber-600" />
+      </div>
+
+      {loading && <p className="text-sm text-gray-400 text-center py-4">Loading charts…</p>}
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="bg-white rounded-[12px] border border-gray-200 p-4">
           <h3 className="font-semibold text-gray-900 text-sm mb-3">Weekly visitor traffic</h3>
-          <ResponsiveContainer width="100%" height={180}>
-            <BarChart data={ANALYTICS_WEEKLY} barSize={12}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-              <XAxis dataKey="day" tick={{fontSize:11}} /><YAxis tick={{fontSize:11}} />
-              <Tooltip contentStyle={{fontSize:12}} />
-              <Bar dataKey="visits" fill="#2563EB" radius={[3,3,0,0]} name="Visits" />
-            </BarChart>
-          </ResponsiveContainer>
+          {weeklyData.length === 0
+            ? <p className="text-xs text-gray-400 text-center py-8">No data for the last 7 days</p>
+            : <ResponsiveContainer width="100%" height={180}>
+                <BarChart data={weeklyData} barSize={12}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                  <XAxis dataKey="day" tick={{fontSize:11}} />
+                  <YAxis tick={{fontSize:11}} allowDecimals={false} />
+                  <Tooltip contentStyle={{fontSize:12}} />
+                  <Bar dataKey="visits" fill="#2563EB" radius={[3,3,0,0]} name="Visits" />
+                </BarChart>
+              </ResponsiveContainer>}
         </div>
+
         <div className="bg-white rounded-[12px] border border-gray-200 p-4">
           <h3 className="font-semibold text-gray-900 text-sm mb-3">Monthly trend</h3>
-          <ResponsiveContainer width="100%" height={180}>
-            <LineChart data={ANALYTICS_MONTHLY}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-              <XAxis dataKey="month" tick={{fontSize:11}} /><YAxis tick={{fontSize:11}} />
-              <Tooltip contentStyle={{fontSize:12}} />
-              <Line type="monotone" dataKey="visits" stroke="#2563EB" strokeWidth={2} dot={{r:3}} name="Visits" />
-            </LineChart>
-          </ResponsiveContainer>
+          {monthlyData.length === 0
+            ? <p className="text-xs text-gray-400 text-center py-8">No data yet</p>
+            : <ResponsiveContainer width="100%" height={180}>
+                <LineChart data={monthlyData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                  <XAxis dataKey="month" tick={{fontSize:11}} />
+                  <YAxis tick={{fontSize:11}} allowDecimals={false} />
+                  <Tooltip contentStyle={{fontSize:12}} />
+                  <Line type="monotone" dataKey="visits" stroke="#2563EB" strokeWidth={2} dot={{r:3}} name="Visits" />
+                </LineChart>
+              </ResponsiveContainer>}
         </div>
       </div>
-      <div className="grid grid-cols-2 gap-4">
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="bg-white rounded-[12px] border border-gray-200 p-4">
           <h3 className="font-semibold text-gray-900 text-sm mb-3">Visit purpose breakdown</h3>
-          <div className="flex items-center gap-4">
-            <ResponsiveContainer width="60%" height={150}>
-              <PieChart><Pie data={PURPOSE_DIST} cx="50%" cy="50%" innerRadius={40} outerRadius={65} dataKey="value" paddingAngle={3}>
-                {PURPOSE_DIST.map((e,i)=><Cell key={i} fill={e.color}/>)}
-              </Pie><Tooltip contentStyle={{fontSize:12}} formatter={v=>[`${v}%`,""]} /></PieChart>
-            </ResponsiveContainer>
-            <div className="flex flex-col gap-1.5">
-              {PURPOSE_DIST.map(d=>(
-                <div key={d.name} className="flex items-center gap-1.5 text-xs">
-                  <div className="w-2 h-2 rounded-sm flex-shrink-0" style={{background:d.color}}/>
-                  <span className="text-gray-600">{d.name}</span>
-                  <span className="font-semibold text-gray-800 ml-auto">{d.value}%</span>
+          {purposeData.length === 0
+            ? <p className="text-xs text-gray-400 text-center py-8">No data yet</p>
+            : <div className="flex items-center gap-4">
+                <ResponsiveContainer width="55%" height={150}>
+                  <PieChart>
+                    <Pie data={purposeData} cx="50%" cy="50%" innerRadius={40} outerRadius={65} dataKey="value" paddingAngle={3}>
+                      {purposeData.map((e,i) => <Cell key={i} fill={e.color} />)}
+                    </Pie>
+                    <Tooltip contentStyle={{fontSize:12}} formatter={v => [`${v}%`, ""]} />
+                  </PieChart>
+                </ResponsiveContainer>
+                <div className="flex flex-col gap-1.5 flex-1">
+                  {purposeData.map(d => (
+                    <div key={d.name} className="flex items-center gap-1.5 text-xs">
+                      <div className="w-2 h-2 rounded-sm flex-shrink-0" style={{background: d.color}} />
+                      <span className="text-gray-600 truncate">{d.name}</span>
+                      <span className="font-semibold text-gray-800 ml-auto">{d.value}%</span>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          </div>
+              </div>}
         </div>
+
         <div className="bg-white rounded-[12px] border border-gray-200 p-4">
           <h3 className="font-semibold text-gray-900 text-sm mb-3">Peak arrival hours</h3>
-          <ResponsiveContainer width="100%" height={150}>
-            <BarChart data={HOUR_DIST} barSize={10}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-              <XAxis dataKey="hour" tick={{fontSize:10}} /><YAxis tick={{fontSize:11}} />
-              <Tooltip contentStyle={{fontSize:12}} />
-              <Bar dataKey="count" fill="#0891B2" radius={[3,3,0,0]} name="Arrivals" />
-            </BarChart>
-          </ResponsiveContainer>
+          {hourData.length === 0
+            ? <p className="text-xs text-gray-400 text-center py-8">No scheduled times recorded yet</p>
+            : <ResponsiveContainer width="100%" height={150}>
+                <BarChart data={hourData} barSize={10}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                  <XAxis dataKey="hour" tick={{fontSize:10}} />
+                  <YAxis tick={{fontSize:11}} allowDecimals={false} />
+                  <Tooltip contentStyle={{fontSize:12}} />
+                  <Bar dataKey="count" fill="#0891B2" radius={[3,3,0,0]} name="Arrivals" />
+                </BarChart>
+              </ResponsiveContainer>}
         </div>
       </div>
+
       {user.role === "Administrator" && (
         <div className="bg-white rounded-[12px] border border-gray-200 p-4">
           <h3 className="font-semibold text-gray-900 text-sm mb-3">Request status breakdown</h3>
           <div className="flex gap-4">
-            {[{label:"Approved",count:approved,pct:Math.round(approved/total*100),color:"bg-green-500"},{label:"Pending",count:pending,pct:Math.round(pending/total*100),color:"bg-yellow-500"},{label:"Rejected",count:rejected,pct:Math.round(rejected/total*100),color:"bg-red-500"}].map(s=>(
+            {statusBreakdown.map(s => (
               <div key={s.label} className="flex-1">
-                <div className="flex justify-between text-xs mb-1"><span className="text-gray-600 font-medium">{s.label}</span><span className="font-bold text-gray-900">{s.count}</span></div>
-                <div className="h-2 bg-gray-100 rounded-full overflow-hidden"><div className={cls("h-full rounded-full",s.color)} style={{width:`${s.pct}%`}}/></div>
+                <div className="flex justify-between text-xs mb-1">
+                  <span className="text-gray-600 font-medium">{s.label}</span>
+                  <span className="font-bold text-gray-900">{s.count}</span>
+                </div>
+                <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                  <div className={cls("h-full rounded-full", s.color)} style={{width: `${s.pct}%`}} />
+                </div>
                 <p className="text-[10px] text-gray-400 mt-0.5">{s.pct}% of total</p>
               </div>
             ))}
@@ -1343,46 +1665,418 @@ function Analytics({ requests, visitors, user }) {
 }
 
 // ─── AUDIT LOG ────────────────────────────────────────────────────
-function AuditLog({ requests }) {
-  const events = useMemo(()=>{
-    const evts=[];
-    requests.forEach(r=>{
-      evts.push({time:r.created_at||r.visit_date,type:"Request Created",visitor:r.visitor_name,detail:`Visit request for ${r.visit_date}`});
-      if(r.checked_in_at)evts.push({time:r.checked_in_at,type:"Checked In",visitor:r.visitor_name,detail:`Badge: ${r.badge_number}`});
-      if(r.checked_out_at)evts.push({time:r.checked_out_at,type:"Checked Out",visitor:r.visitor_name,detail:"Left premises"});
-      if(r.approval_status==="Rejected")evts.push({time:r.visit_date,type:"Request Rejected",visitor:r.visitor_name,detail:"Rejected"});
-    });
-    return evts.sort((a,b)=>b.time?.localeCompare(a.time));
-  },[requests]);
-  const typeColor={"Checked In":"text-green-600 bg-green-50","Checked Out":"text-gray-600 bg-gray-100","Request Created":"text-blue-600 bg-blue-50","Request Rejected":"text-red-600 bg-red-50"};
+function AuditLog({ apiMode = false }) {
+  const [events, setEvents]   = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError]     = useState("");
+
+  useEffect(() => {
+    if (!apiMode) return;
+    setLoading(true);
+    getAuditLog({ limit: 200 })
+      .then(res => setEvents(res.data))
+      .catch(() => setError("Could not load audit log."))
+      .finally(() => setLoading(false));
+  }, [apiMode]);
+
+  const typeColor = {
+    "Staff Login":       "text-blue-600 bg-blue-50",
+    "Staff Logout":      "text-gray-600 bg-gray-100",
+    "Request Created":   "text-violet-600 bg-violet-50",
+    "Request Approved":  "text-green-600 bg-green-50",
+    "Request Rejected":  "text-red-600 bg-red-50",
+    "Checked In":        "text-emerald-600 bg-emerald-50",
+    "Checked Out":       "text-gray-600 bg-gray-100",
+    "Visitor Blocked":   "text-orange-600 bg-orange-50",
+    "Visitor Unblocked": "text-blue-600 bg-blue-50",
+  };
+
+  function fmt(ts) {
+    if (!ts) return "—";
+    const d = new Date(ts);
+    return d.toLocaleString("en-PH", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  }
+
   return (
     <div className="flex flex-col gap-5">
-      <div><h1 className="text-xl font-bold text-gray-900">Audit Log</h1><p className="text-sm text-gray-500">Full event trail</p></div>
-      <div className="bg-white rounded-[12px] border border-gray-200 overflow-hidden">
-        <table className="w-full text-sm">
-          <thead><tr className="text-left text-xs uppercase text-gray-500 border-b border-gray-200 bg-gray-50">
-            <th className="px-5 py-3">Event</th><th className="px-5 py-3">Visitor</th><th className="px-5 py-3">Detail</th><th className="px-5 py-3">Timestamp</th>
-          </tr></thead>
-          <tbody>
-            {events.map((e,i)=>(
-              <tr key={i} className="border-b border-gray-100 last:border-0 hover:bg-gray-50">
-                <td className="px-5 py-3"><span className={cls("px-2 py-0.5 rounded-full text-[11px] font-semibold",typeColor[e.type]||"bg-gray-100 text-gray-600")}>{e.type}</span></td>
-                <td className="px-5 py-3 font-medium text-gray-900">{e.visitor}</td>
-                <td className="px-5 py-3 text-gray-500 text-xs">{e.detail}</td>
-                <td className="px-5 py-3 text-gray-400 text-xs whitespace-nowrap">{e.time}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div>
+        <h1 className="text-xl font-bold text-gray-900">Audit Log</h1>
+        <p className="text-sm text-gray-500">Full server-side event trail — who did what and when</p>
       </div>
+
+      {loading && <p className="text-sm text-gray-400 text-center py-8">Loading…</p>}
+      {error   && <p className="text-sm text-red-500 text-center py-4">{error}</p>}
+      {!apiMode && <p className="text-sm text-gray-400 text-center py-8">Connect to the backend to view the audit log.</p>}
+
+      {!loading && apiMode && events.length === 0 && !error && (
+        <p className="text-sm text-gray-400 text-center py-8">No events recorded yet.</p>
+      )}
+
+      {events.length > 0 && (
+        <div className="bg-white rounded-[12px] border border-gray-200 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs uppercase text-gray-500 border-b border-gray-200 bg-gray-50">
+                <th className="px-4 py-3">Event</th>
+                <th className="px-4 py-3">Actor</th>
+                <th className="px-4 py-3">Visitor</th>
+                <th className="px-4 py-3">Detail</th>
+                <th className="px-4 py-3 whitespace-nowrap">Timestamp</th>
+              </tr>
+            </thead>
+            <tbody>
+              {events.map(e => (
+                <tr key={e.id} className="border-b border-gray-100 last:border-0 hover:bg-gray-50">
+                  <td className="px-4 py-3">
+                    <span className={cls("px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap",
+                      typeColor[e.event_type] || "bg-gray-100 text-gray-600")}>
+                      {e.event_type}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-xs text-gray-700 font-medium">{e.actor_name || "—"}</td>
+                  <td className="px-4 py-3 text-xs text-gray-700">{e.visitor_name || "—"}</td>
+                  <td className="px-4 py-3 text-xs text-gray-400 max-w-[180px] truncate">{e.detail || "—"}</td>
+                  <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">{fmt(e.created_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ─── RESTRICTED AREAS ─────────────────────────────────────────────
+function RestrictedAreas({ requests, user, apiMode = false }) {
+  const [areas,       setAreas]       = useState([]);
+  const [selected,    setSelected]    = useState(null);  // area for occupant view
+  const [occupants,   setOccupants]   = useState([]);
+  const [loadingAreas,setLoadingAreas]= useState(false);
+  const [loadingOcc,  setLoadingOcc]  = useState(false);
+  const [areaError,   setAreaError]   = useState("");
+
+  // Create area dialog
+  const [showCreate,  setShowCreate]  = useState(false);
+  const [areaForm,    setAreaForm]    = useState({ name:"", description:"", floor:"" });
+  const [saving,      setSaving]      = useState(false);
+
+  // Grant access dialog
+  const [showGrant,   setShowGrant]   = useState(null);  // area object
+  const [grantReqId,  setGrantReqId]  = useState("");
+  const [granting,    setGranting]    = useState(false);
+  const [grantError,  setGrantError]  = useState("");
+
+  // Guard: issue badge dialog
+  const [showIssue,   setShowIssue]   = useState(null);  // area object
+  const [issueQR,     setIssueQR]     = useState("");
+  const [issueBadge,  setIssueBadge]  = useState("");
+  const [issuing,     setIssuing]     = useState(false);
+  const [issueResult, setIssueResult] = useState(null);
+  const [issueError,  setIssueError]  = useState("");
+
+  // Guard: confirm entry/exit
+  const [scanMode,    setScanMode]    = useState(null);   // "entry" | "exit"
+  const [scanBadge,   setScanBadge]   = useState("");
+  const [scanResult,  setScanResult]  = useState(null);
+  const [scanError,   setScanError]   = useState("");
+  const [scanning,    setScanning]    = useState(false);
+
+  // Search
+  const [q, setQ] = useState("");
+
+  const isAdmin = user.role === "Administrator";
+  const isAdminOrRecep = ["Administrator","Receptionist"].includes(user.role);
+  const isGuard = user.role === "Security Guard";
+
+  function loadAreas() {
+    if (!apiMode) return;
+    setLoadingAreas(true);
+    getRestrictedAreas()
+      .then(r => setAreas(r.data))
+      .catch(() => setAreaError("Failed to load restricted areas."))
+      .finally(() => setLoadingAreas(false));
+  }
+
+  useEffect(() => { loadAreas(); }, [apiMode]);
+
+  function loadOccupants(area) {
+    setSelected(area);
+    setLoadingOcc(true);
+    getAreaOccupants(area.id)
+      .then(r => setOccupants(r.data))
+      .catch(() => setOccupants([]))
+      .finally(() => setLoadingOcc(false));
+  }
+
+  async function createArea() {
+    if (!areaForm.name) return;
+    setSaving(true);
+    try {
+      await createRestrictedArea(areaForm);
+      setShowCreate(false); setAreaForm({ name:"", description:"", floor:"" });
+      loadAreas();
+    } catch(e) { setAreaError(e?.response?.data?.detail || "Failed to create area."); }
+    finally { setSaving(false); }
+  }
+
+  async function removeArea(id) {
+    if (!confirm("Deactivate this restricted area?")) return;
+    await deleteRestrictedArea(id); loadAreas();
+  }
+
+  async function doGrant() {
+    if (!grantReqId) return;
+    setGranting(true); setGrantError("");
+    try {
+      await grantRestrictedAccess(showGrant.id, { visit_request_id: grantReqId });
+      setShowGrant(null); setGrantReqId(""); loadAreas();
+    } catch(e) { setGrantError(e?.response?.data?.detail || "Failed to grant access."); }
+    finally { setGranting(false); }
+  }
+
+  async function doIssueBadge() {
+    if (!issueQR || !issueBadge) return;
+    setIssuing(true); setIssueError(""); setIssueResult(null);
+    try {
+      const r = await issueRestrictedBadge({ qr_ref: issueQR, restricted_area_id: showIssue.id, restricted_badge: issueBadge });
+      setIssueResult(r.data); setIssueQR(""); setIssueBadge("");
+      loadAreas();
+    } catch(e) { setIssueError(e?.response?.data?.detail || "Failed to issue badge."); }
+    finally { setIssuing(false); }
+  }
+
+  async function doScan() {
+    if (!scanBadge) return;
+    setScanning(true); setScanError(""); setScanResult(null);
+    try {
+      const fn = scanMode === "entry" ? confirmRestrictedEntry : confirmRestrictedExit;
+      const r = await fn({ restricted_badge: scanBadge });
+      setScanResult(r.data); setScanBadge(""); loadAreas();
+      if (selected) loadOccupants(selected);
+    } catch(e) { setScanError(e?.response?.data?.detail || "Badge not found or wrong status."); }
+    finally { setScanning(false); }
+  }
+
+  function statusColor(s) {
+    return s === "Inside"       ? "text-emerald-600 bg-emerald-50"
+         : s === "Badge Issued" ? "text-blue-600 bg-blue-50"
+         : s === "Exited"       ? "text-gray-500 bg-gray-100"
+         :                        "text-amber-600 bg-amber-50";
+  }
+
+  const filteredAreas = areas.filter(a =>
+    a.name.toLowerCase().includes(q.toLowerCase()) ||
+    a.floor?.toLowerCase().includes(q.toLowerCase())
+  );
+
+  // Approved requests that can be granted restricted access
+  const approvedRequests = requests.filter(r => r.approval_status === "Approved");
+
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-xl font-bold text-gray-900">Restricted Areas</h1>
+          <p className="text-sm text-gray-500">
+            {isAdmin ? "Manage areas, grant access, and view occupants"
+             : isAdminOrRecep ? "Manage areas and grant access"
+             : "Issue and scan restricted badges"}
+          </p>
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          {isAdminOrRecep && (
+            <Btn onClick={() => setShowCreate(true)}>+ New Area</Btn>
+          )}
+          {(isGuard || isAdmin) && (<>
+            <Btn variant="outline" onClick={() => { setScanMode("entry"); setScanResult(null); setScanError(""); }}>🔍 Confirm Entry</Btn>
+            <Btn variant="outline" onClick={() => { setScanMode("exit");  setScanResult(null); setScanError(""); }}>🚪 Confirm Exit</Btn>
+          </>)}
+        </div>
+      </div>
+
+      {/* Entry / Exit scan panel */}
+      {scanMode && (
+        <div className="bg-white rounded-[12px] border border-gray-200 p-4 flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <h3 className="font-semibold text-gray-900 text-sm">
+              {scanMode === "entry" ? "🔍 Confirm Restricted Area Entry" : "🚪 Confirm Restricted Area Exit"}
+            </h3>
+            <button onClick={() => { setScanMode(null); setScanResult(null); setScanError(""); }}
+              className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
+          </div>
+          <div className="flex gap-2">
+            <input value={scanBadge} onChange={e => setScanBadge(e.target.value)}
+              placeholder="Enter restricted badge number e.g. RA-1024"
+              className="flex-1 h-9 px-3 rounded-lg border border-gray-200 text-sm outline-none focus:ring-2 focus:ring-blue-200"
+              onKeyDown={e => e.key === "Enter" && doScan()} />
+            <Btn onClick={doScan} disabled={scanning || !scanBadge}>{scanning ? "…" : "Confirm"}</Btn>
+          </div>
+          {scanError && <p className="text-xs text-red-500">{scanError}</p>}
+          {scanResult && (
+            <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3">
+              <p className="text-sm font-semibold text-emerald-800">✅ {scanResult.visitor_name}</p>
+              <p className="text-xs text-emerald-600">{scanResult.area_name} — {scanResult.status}</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Search */}
+      <div className="bg-white rounded-[12px] border border-gray-200 p-3">
+        <input className="w-full h-9 pl-4 pr-3 rounded-lg border border-gray-200 text-sm outline-none focus:ring-2 focus:ring-blue-200"
+          placeholder="Search areas by name or floor…" value={q} onChange={e => setQ(e.target.value)} />
+      </div>
+
+      {areaError && <p className="text-sm text-red-500">{areaError}</p>}
+      {loadingAreas && <p className="text-sm text-gray-400 text-center py-8">Loading…</p>}
+
+      {/* Areas grid */}
+      {!loadingAreas && filteredAreas.length === 0 && (
+        <p className="text-sm text-gray-400 text-center py-10">No restricted areas defined yet.</p>
+      )}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {filteredAreas.map(area => (
+          <div key={area.id} className="bg-white rounded-[12px] border border-gray-200 p-4 flex flex-col gap-3">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-base">🔒</span>
+                  <h3 className="font-bold text-gray-900 text-sm">{area.name}</h3>
+                </div>
+                {area.floor && <p className="text-xs text-gray-400 mt-0.5">Floor: {area.floor}</p>}
+                {area.description && <p className="text-xs text-gray-500 mt-1">{area.description}</p>}
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <span className="text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
+                  {area.current_occupants} inside
+                </span>
+                {isAdmin && (
+                  <button onClick={() => removeArea(area.id)}
+                    className="text-gray-300 hover:text-red-400 text-sm leading-none transition-colors">✕</button>
+                )}
+              </div>
+            </div>
+            <div className="flex gap-2 flex-wrap">
+              {isAdmin && (
+                <button onClick={() => loadOccupants(area)}
+                  className="text-xs px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:bg-gray-50 font-medium transition-colors">
+                  👥 View Occupants
+                </button>
+              )}
+              {isAdmin && (
+                <button onClick={() => { setShowGrant(area); setGrantReqId(""); setGrantError(""); }}
+                  className="text-xs px-3 py-1.5 rounded-lg border border-blue-200 text-blue-600 hover:bg-blue-50 font-medium transition-colors">
+                  ＋ Grant Access
+                </button>
+              )}
+              {(isGuard || isAdmin) && (
+                <button onClick={() => { setShowIssue(area); setIssueQR(""); setIssueBadge(""); setIssueResult(null); setIssueError(""); }}
+                  className="text-xs px-3 py-1.5 rounded-lg border border-violet-200 text-violet-600 hover:bg-violet-50 font-medium transition-colors">
+                  🪪 Issue Badge
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Occupants panel — Admin only */}
+      {selected && isAdmin && (
+        <div className="bg-white rounded-[12px] border border-gray-200 overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-3 border-b border-gray-100">
+            <h3 className="font-semibold text-gray-900 text-sm">Occupants — {selected.name}</h3>
+            <button onClick={() => setSelected(null)} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
+          </div>
+          {loadingOcc
+            ? <p className="text-sm text-gray-400 text-center py-6">Loading…</p>
+            : occupants.length === 0
+              ? <p className="text-sm text-gray-400 text-center py-6">No access records for this area.</p>
+              : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead><tr className="text-left text-xs uppercase text-gray-500 border-b border-gray-100 bg-gray-50">
+                      <th className="px-4 py-3">Visitor</th>
+                      <th className="px-4 py-3">Badge</th>
+                      <th className="px-4 py-3">Status</th>
+                      <th className="px-4 py-3">Approved By</th>
+                      <th className="px-4 py-3">Entered</th>
+                      <th className="px-4 py-3">Exited</th>
+                    </tr></thead>
+                    <tbody>
+                      {occupants.map(o => (
+                        <tr key={o.id} className="border-b border-gray-50 last:border-0 hover:bg-gray-50">
+                          <td className="px-4 py-3 font-medium text-gray-900">{o.visitor_name}</td>
+                          <td className="px-4 py-3 text-xs font-mono text-gray-600">{o.restricted_badge || "—"}</td>
+                          <td className="px-4 py-3">
+                            <span className={cls("px-2 py-0.5 rounded-full text-[11px] font-semibold", statusColor(o.status))}>
+                              {o.status}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-xs text-gray-500">{o.approved_by_name || "—"}</td>
+                          <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">
+                            {o.entry_confirmed_at ? new Date(o.entry_confirmed_at).toLocaleString("en-PH",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}) : "—"}
+                          </td>
+                          <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">
+                            {o.exited_at ? new Date(o.exited_at).toLocaleString("en-PH",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}) : "—"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )
+          }
+        </div>
+      )}
+
+      {/* Create Area Dialog */}
+      <Dialog open={showCreate} title="Create Restricted Area" onClose={() => setShowCreate(false)}
+        footer={<><Btn variant="ghost" onClick={() => setShowCreate(false)}>Cancel</Btn><Btn onClick={createArea} disabled={saving}>{saving ? "Saving…" : "Create Area"}</Btn></>}>
+        <Input label="Area Name" value={areaForm.name} onChange={e => setAreaForm(p => ({...p, name: e.target.value}))} required placeholder="e.g. Server Room, Lab B" />
+        <Input label="Floor / Location" value={areaForm.floor} onChange={e => setAreaForm(p => ({...p, floor: e.target.value}))} placeholder="e.g. 3rd Floor" />
+        <Input label="Description" value={areaForm.description} onChange={e => setAreaForm(p => ({...p, description: e.target.value}))} placeholder="Optional notes about this area" />
+      </Dialog>
+
+      {/* Grant Access Dialog — Admin only */}
+      <Dialog open={!!showGrant} title={`Grant Restricted Access — ${showGrant?.name}`} onClose={() => setShowGrant(null)}
+        footer={<><Btn variant="ghost" onClick={() => setShowGrant(null)}>Cancel</Btn><Btn onClick={doGrant} disabled={granting || !grantReqId}>{granting ? "Granting…" : "Grant Access"}</Btn></>}>
+        <p className="text-xs text-gray-500 mb-2">Select an approved visit request to grant access to this restricted area. The guard will then issue a special badge.</p>
+        {grantError && <p className="text-xs text-red-500 mb-2">{grantError}</p>}
+        <label className="block text-xs font-semibold text-gray-600 mb-1">Approved Visit Request
+          <select value={grantReqId} onChange={e => setGrantReqId(e.target.value)}
+            className="mt-1 w-full h-9 px-3 rounded-[8px] border border-gray-200 text-sm outline-none">
+            <option value="">— Select a request —</option>
+            {approvedRequests.map(r => (
+              <option key={r.id} value={r.id}>{r.visitor_name} · {r.visit_date} · {r.purpose}</option>
+            ))}
+          </select>
+        </label>
+      </Dialog>
+
+      {/* Issue Restricted Badge Dialog — Guard / Admin */}
+      <Dialog open={!!showIssue} title={`Issue Restricted Badge — ${showIssue?.name}`} onClose={() => setShowIssue(null)}
+        footer={<><Btn variant="ghost" onClick={() => setShowIssue(null)}>Close</Btn><Btn onClick={doIssueBadge} disabled={issuing || !issueQR || !issueBadge}>{issuing ? "Issuing…" : "Issue Badge"}</Btn></>}>
+        <p className="text-xs text-gray-500 mb-2">Scan or enter the visitor's approval QR code, then assign a restricted badge number.</p>
+        {issueError && <p className="text-xs text-red-500 mb-2">{issueError}</p>}
+        {issueResult && (
+          <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 mb-2">
+            <p className="text-xs font-semibold text-emerald-800">✅ Badge issued to {issueResult.visitor_name}</p>
+            <p className="text-xs text-emerald-600">Badge: {issueResult.restricted_badge} → {issueResult.area_name}</p>
+          </div>
+        )}
+        <Input label="Visitor QR Ref" value={issueQR} onChange={e => setIssueQR(e.target.value)} placeholder="Paste or scan approval QR ref" />
+        <Input label="Restricted Badge Number" value={issueBadge} onChange={e => setIssueBadge(e.target.value)} placeholder="e.g. RA-1024" />
+      </Dialog>
     </div>
   );
 }
 
 // ─── LAYOUT ───────────────────────────────────────────────────────
 function Sidebar({ page, setPage, user, open, onClose }) {
-  const adminNav=[{id:"dashboard",label:"Dashboard",icon:"📊"},{id:"visitors",label:"Visitors",icon:"👥"},{id:"requests",label:"Visit Requests",icon:"📋"},{id:"security",label:"Security Desk",icon:"🔒"},{id:"analytics",label:"Analytics",icon:"📈"},{id:"audit",label:"Audit Log",icon:"📜"}];
-  const guardNav=[{id:"dashboard",label:"Dashboard",icon:"📊"},{id:"visitors",label:"Visitors",icon:"👥"},{id:"security",label:"Security Desk",icon:"🔒"},{id:"audit",label:"Audit Log",icon:"📜"}];
+  const adminNav=[{id:"dashboard",label:"Dashboard",icon:"📊"},{id:"visitors",label:"Visitors",icon:"👥"},{id:"requests",label:"Visit Requests",icon:"📋"},{id:"security",label:"Security Desk",icon:"🔒"},{id:"analytics",label:"Analytics",icon:"📈"},{id:"audit",label:"Audit Log",icon:"📜"},{id:"restricted",label:"Restricted Areas",icon:"🔒"}];
+  const guardNav=[{id:"dashboard",label:"Dashboard",icon:"📊"},{id:"visitors",label:"Visitors",icon:"👥"},{id:"security",label:"Security Desk",icon:"🔒"},{id:"audit",label:"Audit Log",icon:"📜"},{id:"restricted",label:"Restricted Areas",icon:"🔒"}];
   const recepNav=[{id:"dashboard",label:"Dashboard",icon:"📊"},{id:"visitors",label:"Visitors",icon:"👥"},{id:"requests",label:"Visit Requests",icon:"📋"},{id:"analytics",label:"Analytics",icon:"📈"},{id:"audit",label:"Audit Log",icon:"📜"}];
   const nav=user.role==="Administrator"?adminNav:user.role==="Security Guard"?guardNav:recepNav;
 
@@ -1564,7 +2258,7 @@ export default function VistaVMS({ apiMode = false, authUser = null, onSignInWit
              A Security Guard who manually sets page="requests" in React DevTools
              or localStorage will see "Access denied" instead of the page. */}
         {page === "dashboard" && <Dashboard requests={requests} visitors={visitors} user={user} />}
-        {page === "visitors" && <VisitorsPage visitors={visitors} setVisitors={setVisitors} user={user} apiMode={apiMode} refreshVisitors={refreshVisitors} />}
+        {page === "visitors" && <VisitorsPage visitors={visitors} setVisitors={setVisitors} requests={requests} user={user} apiMode={apiMode} refreshVisitors={refreshVisitors} />}
         {page === "requests" && (["Administrator","Receptionist"].includes(user.role)
           ? <VisitRequestsPage requests={requests} setRequests={setRequests} user={user} apiMode={apiMode} refreshRequests={refreshRequests} />
           : <AccessDenied />)}
@@ -1572,10 +2266,13 @@ export default function VistaVMS({ apiMode = false, authUser = null, onSignInWit
           ? <SecurityDesk requests={requests} setRequests={setRequests} apiMode={apiMode} refreshRequests={refreshRequests} />
           : <AccessDenied />)}
         {page === "analytics" && (["Administrator","Receptionist"].includes(user.role)
-          ? <Analytics requests={requests} visitors={visitors} user={user} />
+          ? <Analytics requests={requests} visitors={visitors} user={user} apiMode={apiMode} />
           : <AccessDenied />)}
         {page === "audit" && (["Administrator"].includes(user.role)
-          ? <AuditLog requests={requests} />
+          ? <AuditLog apiMode={apiMode} />
+          : <AccessDenied />)}
+        {page === "restricted" && (["Administrator","Security Guard"].includes(user.role)
+          ? <RestrictedAreas requests={requests} user={user} apiMode={apiMode} />
           : <AccessDenied />)}
       </main>
     </div>
