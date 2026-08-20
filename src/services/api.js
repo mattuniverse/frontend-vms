@@ -72,6 +72,9 @@ export const lookupByQR        = (qrRef)        => api.get(`/visit-requests/by-q
 export const getAuditLog        = (params) => api.get('/audit-log', { params })
 export const getAnalyticsSummary = ()      => api.get('/analytics/summary')
 
+// ── Visit Request restricted access check ─────────────────────────
+export const getRequestRestrictedAccess = (requestId) => api.get(`/visit-requests/${requestId}/restricted-access`)
+
 // ── Restricted Areas ──────────────────────────────────────────────
 export const getRestrictedAreas    = ()              => api.get('/restricted-areas')
 export const createRestrictedArea  = (data)          => api.post('/restricted-areas', data)
