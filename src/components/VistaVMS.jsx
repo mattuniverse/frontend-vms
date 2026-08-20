@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
-import { getVisitRequests, createVisitRequest, approveRequest, checkInVisitor, checkOutVisitor, getVisitors, createVisitor, toggleBlockVisitor, getAuditLog, getAnalyticsSummary, getRestrictedAreas, createRestrictedArea, deleteRestrictedArea, grantRestrictedAccess, issueRestrictedBadge, confirmRestrictedEntry, confirmRestrictedExit, getAreaOccupants } from "../services/api";
+import { getVisitRequests, createVisitRequest, approveRequest, checkInVisitor, checkOutVisitor, getVisitors, createVisitor, toggleBlockVisitor, getAuditLog, getAnalyticsSummary, getRestrictedAreas, createRestrictedArea, deleteRestrictedArea, grantRestrictedAccess, issueRestrictedBadge, confirmRestrictedEntry, confirmRestrictedExit, getAreaOccupants, getRequestRestrictedAccess } from "../services/api";
 import {
   BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend
@@ -1158,62 +1158,123 @@ function VisitorsPage({ visitors, setVisitors, user, requests = [], apiMode = fa
 // ─── VISIT REQUESTS ───────────────────────────────────────────────
 function VisitRequestsPage({ requests, setRequests, user, apiMode = false, refreshRequests = async () => {} }) {
   const [checkinTarget, setCheckinTarget] = useState(null);
-  const [badge, setBadge] = useState(""); const [filterStatus, setFilterStatus] = useState("All");
+  const [badge, setBadge]                 = useState("");
+  const [filterStatus, setFilterStatus]   = useState("All");
+
+  // Approve dialog state
+  const [approveTarget, setApproveTarget]         = useState(null);  // request object
+  const [areas, setAreas]                         = useState([]);
+  const [grantRestricted, setGrantRestricted]     = useState(false);
+  const [selectedArea, setSelectedArea]           = useState("");
+  const [approving, setApproving]                 = useState(false);
+  const [approveError, setApproveError]           = useState("");
+
   const canApprove = ["Administrator","Receptionist"].includes(user.role);
   const canCheckIn = ["Administrator","Security Guard"].includes(user.role);
-  const filtered = requests.filter(r=>filterStatus==="All"||r.approval_status===filterStatus||r.status===filterStatus);
+  const filtered   = requests.filter(r =>
+    filterStatus === "All" || r.approval_status === filterStatus || r.status === filterStatus
+  );
 
-  async function approve(id){
-    try { await approveRequest(id, { action: "Approved" }); await refreshRequests(); }
-    catch (e) { console.error("Failed to approve request", e); alert("Failed to approve request. See console for details."); }
+  // Load restricted areas when admin opens approve dialog
+  useEffect(() => {
+    if (!approveTarget || !apiMode) return;
+    getRestrictedAreas().then(r => setAreas(r.data)).catch(() => setAreas([]));
+  }, [approveTarget, apiMode]);
+
+  async function openApprove(r) {
+    setApproveTarget(r);
+    setGrantRestricted(false);
+    setSelectedArea("");
+    setApproveError("");
   }
-  async function reject(id){
+
+  async function doApprove() {
+    setApproving(true); setApproveError("");
+    try {
+      await approveRequest(approveTarget.id, {
+        action: "Approved",
+        restricted_area_id: grantRestricted && selectedArea ? selectedArea : null,
+      });
+      await refreshRequests();
+      setApproveTarget(null);
+    } catch(e) {
+      setApproveError(e?.response?.data?.detail || "Failed to approve. Try again.");
+    } finally { setApproving(false); }
+  }
+
+  async function reject(id) {
     try { await approveRequest(id, { action: "Rejected", rejection_reason: "Rejected by staff" }); await refreshRequests(); }
-    catch (e) { console.error("Failed to reject request", e); alert("Failed to reject request. See console for details."); }
+    catch (e) { console.error("Failed to reject request", e); alert("Failed to reject. See console."); }
   }
-  async function checkOut(id){
+
+  async function checkOut(id) {
     try { await checkOutVisitor(id); await refreshRequests(); }
-    catch (e) { console.error("Failed to check out visitor", e); alert("Failed to check out visitor. See console for details."); }
+    catch (e) { console.error("Failed to check out visitor", e); alert("Failed to check out. See console."); }
   }
-  async function doCheckIn(){
+
+  async function doCheckIn() {
     try { await checkInVisitor(checkinTarget, { badge_number: badge, visitor_id_verified: true }); await refreshRequests(); }
-    catch (e) { console.error("Failed to check in visitor", e); alert("Failed to check in visitor. See console for details."); }
-    setCheckinTarget(null);setBadge("");
+    catch (e) { console.error("Failed to check in visitor", e); alert("Failed to check in. See console."); }
+    setCheckinTarget(null); setBadge("");
   }
+
   return (
     <div className="flex flex-col gap-5">
-      <div><h1 className="text-xl font-bold text-gray-900">Visit Requests</h1><p className="text-sm text-gray-500">Approve, reject, check-in and check-out</p></div>
+      <div>
+        <h1 className="text-xl font-bold text-gray-900">Visit Requests</h1>
+        <p className="text-sm text-gray-500">Approve, reject, check-in and check-out</p>
+      </div>
+
       <div className="flex gap-1.5 flex-wrap">
-        {["All","Pending","Approved","Rejected","Checked In","Checked Out"].map(s=>(
-          <button key={s} onClick={()=>setFilterStatus(s)}
-            className={cls("px-3 py-1 rounded-full text-xs font-medium transition-colors",filterStatus===s?"bg-blue-600 text-white":"bg-white border border-gray-200 text-gray-600 hover:bg-gray-50")}>
+        {["All","Pending","Approved","Rejected","Checked In","Checked Out"].map(s => (
+          <button key={s} onClick={() => setFilterStatus(s)}
+            className={cls("px-3 py-1 rounded-full text-xs font-medium transition-colors",
+              filterStatus === s ? "bg-blue-600 text-white" : "bg-white border border-gray-200 text-gray-600 hover:bg-gray-50")}>
             {s}
           </button>
         ))}
       </div>
+
       <div className="bg-white rounded-[12px] border border-gray-200 overflow-x-auto">
         <table className="w-full text-sm">
-          <thead><tr className="text-left text-xs uppercase text-gray-500 border-b border-gray-200 bg-gray-50">
-            <th className="px-4 py-3">Visitor</th><th className="px-4 py-3">Host</th><th className="px-4 py-3">Date/Time</th>
-            <th className="px-4 py-3">Purpose</th><th className="px-4 py-3">Approval</th><th className="px-4 py-3">Status</th>
-            {(canApprove||canCheckIn)&&<th className="px-4 py-3">Actions</th>}
-          </tr></thead>
+          <thead>
+            <tr className="text-left text-xs uppercase text-gray-500 border-b border-gray-200 bg-gray-50">
+              <th className="px-4 py-3">Visitor</th>
+              <th className="px-4 py-3">Host</th>
+              <th className="px-4 py-3">Date/Time</th>
+              <th className="px-4 py-3">Purpose</th>
+              <th className="px-4 py-3">Approval</th>
+              <th className="px-4 py-3">Status</th>
+              {(canApprove || canCheckIn) && <th className="px-4 py-3">Actions</th>}
+            </tr>
+          </thead>
           <tbody>
-            {filtered.length===0&&<tr><td colSpan={7} className="px-5 py-12 text-center text-gray-400">No requests match</td></tr>}
-            {filtered.map(r=>(
+            {filtered.length === 0 && (
+              <tr><td colSpan={7} className="px-5 py-12 text-center text-gray-400">No requests match</td></tr>
+            )}
+            {filtered.map(r => (
               <tr key={r.id} className="border-b border-gray-100 last:border-0 hover:bg-gray-50">
                 <td className="px-4 py-3 font-medium text-gray-900">{r.visitor_name}</td>
-                <td className="px-4 py-3 text-gray-500 text-xs">{r.host}</td>
+                <td className="px-4 py-3 text-gray-500 text-xs">{r.host || r.host_name}</td>
                 <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">{r.visit_date} · {r.expected_time}</td>
                 <td className="px-4 py-3 text-gray-500 max-w-[120px] truncate text-xs">{r.purpose}</td>
-                <td className="px-4 py-3"><Badge status={r.approval_status}/></td>
-                <td className="px-4 py-3"><Badge status={r.status}/></td>
-                {(canApprove||canCheckIn)&&(
+                <td className="px-4 py-3"><Badge status={r.approval_status} /></td>
+                <td className="px-4 py-3"><Badge status={r.status} /></td>
+                {(canApprove || canCheckIn) && (
                   <td className="px-4 py-3">
                     <div className="flex gap-1.5">
-                      {canApprove&&r.approval_status==="Pending"&&<><Btn size="sm" variant="success" onClick={()=>approve(r.id)}>Approve</Btn><Btn size="sm" variant="danger" onClick={()=>reject(r.id)}>Reject</Btn></>}
-                      {canCheckIn&&r.approval_status==="Approved"&&r.status==="Pending Arrival"&&<Btn size="sm" variant="outline" onClick={()=>setCheckinTarget(r.id)}>Check In</Btn>}
-                      {r.status==="Checked In"&&<Btn size="sm" variant="warning" onClick={()=>checkOut(r.id)}>Check Out</Btn>}
+                      {canApprove && r.approval_status === "Pending" && (
+                        <>
+                          <Btn size="sm" variant="success" onClick={() => openApprove(r)}>Approve</Btn>
+                          <Btn size="sm" variant="danger"  onClick={() => reject(r.id)}>Reject</Btn>
+                        </>
+                      )}
+                      {canCheckIn && r.approval_status === "Approved" && r.status === "Pending Arrival" && (
+                        <Btn size="sm" variant="outline" onClick={() => setCheckinTarget(r.id)}>Check In</Btn>
+                      )}
+                      {r.status === "Checked In" && (
+                        <Btn size="sm" variant="warning" onClick={() => checkOut(r.id)}>Check Out</Btn>
+                      )}
                     </div>
                   </td>
                 )}
@@ -1222,10 +1283,71 @@ function VisitRequestsPage({ requests, setRequests, user, apiMode = false, refre
           </tbody>
         </table>
       </div>
-      <Dialog open={!!checkinTarget} title="Check In Visitor" onClose={()=>setCheckinTarget(null)}
-        footer={<><Btn variant="ghost" onClick={()=>setCheckinTarget(null)}>Cancel</Btn><Btn onClick={doCheckIn} disabled={!badge}>Confirm</Btn></>}>
-        <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-800 flex gap-2">⚠️ Verify visitor's government ID first.</div>
-        <Input label="Badge Number" value={badge} onChange={e=>setBadge(e.target.value)} placeholder="e.g. V-1024" required />
+
+      {/* Approve dialog — with optional restricted area grant */}
+      <Dialog open={!!approveTarget} title="Approve Visit Request" onClose={() => setApproveTarget(null)}
+        footer={<>
+          <Btn variant="ghost" onClick={() => setApproveTarget(null)}>Cancel</Btn>
+          <Btn onClick={doApprove} disabled={approving || (grantRestricted && !selectedArea)}>
+            {approving ? "Approving…" : "Approve"}
+          </Btn>
+        </>}>
+        {approveTarget && (
+          <div className="flex flex-col gap-3">
+            <div className="bg-blue-50 rounded-lg p-3">
+              <p className="text-sm font-semibold text-gray-900">{approveTarget.visitor_name}</p>
+              <p className="text-xs text-gray-500">{approveTarget.purpose} · {approveTarget.visit_date}</p>
+            </div>
+
+            {/* Restricted area toggle — only visible to Admin, hidden from visitor */}
+            {user.role === "Administrator" && (
+              <div className={cls(
+                "rounded-lg border p-3 flex flex-col gap-2 transition-colors",
+                grantRestricted ? "border-red-200 bg-red-50" : "border-gray-200 bg-gray-50"
+              )}>
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input type="checkbox" checked={grantRestricted}
+                    onChange={e => { setGrantRestricted(e.target.checked); setSelectedArea(""); }}
+                    className="w-4 h-4 accent-red-600" />
+                  <span className="text-xs font-semibold text-gray-700">
+                    🔒 Grant Restricted Area Access
+                  </span>
+                </label>
+                <p className="text-[11px] text-gray-400 pl-6">
+                  Visitor will NOT see this — only guards see it after scanning their QR.
+                </p>
+                {grantRestricted && (
+                  <label className="block text-xs font-semibold text-gray-600 pl-6">
+                    Select Area
+                    <select value={selectedArea} onChange={e => setSelectedArea(e.target.value)}
+                      className="mt-1 w-full h-9 px-3 rounded-[8px] border border-gray-200 text-sm outline-none">
+                      <option value="">— Choose a restricted area —</option>
+                      {areas.map(a => (
+                        <option key={a.id} value={a.id}>
+                          {a.name}{a.floor ? ` · ${a.floor}` : ""}
+                        </option>
+                      ))}
+                    </select>
+                    {areas.length === 0 && (
+                      <p className="text-[11px] text-amber-600 mt-1">No restricted areas defined yet. Create one in the Restricted Areas page first.</p>
+                    )}
+                  </label>
+                )}
+              </div>
+            )}
+
+            {approveError && <p className="text-xs text-red-500">{approveError}</p>}
+          </div>
+        )}
+      </Dialog>
+
+      {/* Check-in dialog */}
+      <Dialog open={!!checkinTarget} title="Check In Visitor" onClose={() => setCheckinTarget(null)}
+        footer={<><Btn variant="ghost" onClick={() => setCheckinTarget(null)}>Cancel</Btn><Btn onClick={doCheckIn} disabled={!badge}>Confirm</Btn></>}>
+        <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-800">
+          ⚠️ Verify visitor's government ID first.
+        </div>
+        <Input label="Badge Number" value={badge} onChange={e => setBadge(e.target.value)} placeholder="e.g. V-1024" required />
       </Dialog>
     </div>
   );
@@ -1362,18 +1484,54 @@ function ManualQREntry({ onResult }) {
 
 // ─── SECURITY DESK ────────────────────────────────────────────────
 function SecurityDesk({ requests, setRequests, apiMode = false, refreshRequests = async () => {} }) {
-  const [q, setQ] = useState("");
-  const [badge, setBadge] = useState("");
-  const [target, setTarget] = useState(null);
-  const [showScanner, setShowScanner] = useState(false);
-  const [scanResult, setScanResult] = useState(null);
-  const [idVerified, setIdVerified] = useState(false);
+  const [q, setQ]                         = useState("");
+  const [badge, setBadge]                 = useState("");
+  const [target, setTarget]               = useState(null);
+  const [showScanner, setShowScanner]     = useState(false);
+  const [scanResult, setScanResult]       = useState(null);
+  const [idVerified, setIdVerified]       = useState(false);
+
+  // Restricted area state — shown inside check-in dialog if pre-approved
+  const [restrictedInfo, setRestrictedInfo]     = useState(null);   // fetched from backend
+  const [restrictedBadge, setRestrictedBadge]   = useState("");
+  const [issuingRestricted, setIssuingRestricted] = useState(false);
+  const [restrictedResult, setRestrictedResult]   = useState(null);
+  const [restrictedError, setRestrictedError]     = useState("");
 
   const approved = requests.filter(r =>
     r.approval_status === "Approved" &&
     (r.status === "Pending Arrival" || r.status === "Checked In") &&
     (r.visitor_name.toLowerCase().includes(q.toLowerCase()) || r.id?.toString().includes(q))
   );
+
+  async function openCheckIn(r) {
+    setTarget(r);
+    setIdVerified(false);
+    setBadge("");
+    setRestrictedInfo(null);
+    setRestrictedBadge("");
+    setRestrictedResult(null);
+    setRestrictedError("");
+
+    // Silently check if this visitor has restricted area access pre-approved
+    if (apiMode) {
+      try {
+        const res = await getRequestRestrictedAccess(r.id);
+        if (res.data?.has_restricted_access) {
+          setRestrictedInfo(res.data);
+        }
+      } catch (e) {
+        // Non-fatal — guard still sees normal check-in
+        console.warn("Could not fetch restricted access info", e);
+      }
+    }
+  }
+
+  function closeCheckIn() {
+    setTarget(null); setIdVerified(false); setBadge("");
+    setRestrictedInfo(null); setRestrictedBadge("");
+    setRestrictedResult(null); setRestrictedError("");
+  }
 
   async function checkOut(id) {
     try { await checkOutVisitor(id); await refreshRequests(); }
@@ -1383,22 +1541,35 @@ function SecurityDesk({ requests, setRequests, apiMode = false, refreshRequests 
   async function confirmCheckIn() {
     try { await checkInVisitor(target.id, { badge_number: badge, visitor_id_verified: idVerified }); await refreshRequests(); }
     catch (e) { console.error("Failed to check in visitor", e); alert("Failed to check in visitor. See console for details."); }
-    setTarget(null); setBadge(""); setIdVerified(false);
+    closeCheckIn();
+  }
+
+  async function doIssueRestrictedBadge() {
+    if (!restrictedBadge || !restrictedInfo) return;
+    setIssuingRestricted(true); setRestrictedError(""); setRestrictedResult(null);
+    try {
+      const res = await issueRestrictedBadge({
+        qr_ref: target.qr_ref || target.id,
+        restricted_area_id: restrictedInfo.restricted_area_id,
+        restricted_badge: restrictedBadge,
+      });
+      setRestrictedResult(res.data);
+    } catch(e) {
+      setRestrictedError(e?.response?.data?.detail || "Failed to issue restricted badge.");
+    } finally { setIssuingRestricted(false); }
   }
 
   function handleQRResult(raw) {
     setShowScanner(false);
-    // raw format: "qr_ref|name|date|host" OR just a ref string
     const parts = raw.split("|");
     const ref = parts[0];
-    // Try to find matching request by qr_ref or id
     const found = requests.find(r =>
       r.qr_ref === ref || r.id === ref || r.id?.toString() === ref
     );
     if (found) {
       setScanResult({ found: true, request: found });
       if (found.approval_status === "Approved" && found.status === "Pending Arrival") {
-        setTarget(found);
+        openCheckIn(found);
       }
     } else {
       setScanResult({ found: false, raw });
@@ -1412,10 +1583,8 @@ function SecurityDesk({ requests, setRequests, apiMode = false, refreshRequests 
           <h1 className="text-xl font-bold text-gray-900">Security Desk</h1>
           <p className="text-sm text-gray-500">Verify IDs, issue badges, log entry and exit</p>
         </div>
-        <button
-          onClick={() => { setShowScanner(true); setScanResult(null); }}
-          className="flex items-center gap-2 px-4 h-10 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700 shadow"
-        >
+        <button onClick={() => { setShowScanner(true); setScanResult(null); }}
+          className="flex items-center gap-2 px-4 h-10 bg-blue-600 text-white rounded-xl text-sm font-semibold hover:bg-blue-700 shadow">
           📷 Scan QR
         </button>
       </div>
@@ -1447,11 +1616,11 @@ function SecurityDesk({ requests, setRequests, apiMode = false, refreshRequests 
       <div className="bg-[#0F172A] rounded-[12px] p-4 text-white">
         <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Check-in procedure</p>
         <div className="flex items-center gap-3 flex-wrap text-xs">
-          {["🚶 Visitor arrives", "📷 Scan QR / Search", "🪪 Verify ID", "🔖 Issue badge", "✅ Log check-in"].map((s, i, a) => (
+          {["🚶 Visitor arrives","📷 Scan QR / Search","🪪 Verify ID","🔖 Issue badge","✅ Log check-in"].map((s,i,a) => (
             <div key={i} className="flex items-center gap-2">
-              <div className="w-5 h-5 rounded-full bg-blue-600 text-white text-[10px] font-bold flex items-center justify-center">{i + 1}</div>
+              <div className="w-5 h-5 rounded-full bg-blue-600 text-white text-[10px] font-bold flex items-center justify-center">{i+1}</div>
               <span className="text-slate-300">{s}</span>
-              {i < a.length - 1 && <span className="text-slate-600">→</span>}
+              {i < a.length-1 && <span className="text-slate-600">→</span>}
             </div>
           ))}
         </div>
@@ -1479,8 +1648,8 @@ function SecurityDesk({ requests, setRequests, apiMode = false, refreshRequests 
                 <td className="px-4 py-3"><Badge status={r.status} /></td>
                 <td className="px-4 py-3 text-xs text-gray-500">{r.badge_number || "—"}</td>
                 <td className="px-4 py-3 flex gap-1">
-                  {r.status === "Pending Arrival" && <Btn size="sm" variant="success" onClick={() => { setTarget(r); setIdVerified(false); }}>🔖 Check In</Btn>}
-                  {r.status === "Checked In" && <Btn size="sm" variant="warning" onClick={() => checkOut(r.id)}>Exit</Btn>}
+                  {r.status === "Pending Arrival" && <Btn size="sm" variant="success" onClick={() => openCheckIn(r)}>🔖 Check In</Btn>}
+                  {r.status === "Checked In"      && <Btn size="sm" variant="warning" onClick={() => checkOut(r.id)}>Exit</Btn>}
                 </td>
               </tr>
             ))}
@@ -1489,30 +1658,79 @@ function SecurityDesk({ requests, setRequests, apiMode = false, refreshRequests 
       </div>
 
       {/* Check-in dialog */}
-      <Dialog open={!!target} title="Check In Visitor" onClose={() => { setTarget(null); setIdVerified(false); }}
-        footer={<><Btn variant="ghost" onClick={() => { setTarget(null); setIdVerified(false); }}>Cancel</Btn><Btn onClick={confirmCheckIn} disabled={!badge || !idVerified}>Confirm & Issue Badge</Btn></>}>
-        {target && <>
-          <div className="bg-blue-50 rounded-lg p-3">
-            <p className="text-sm font-semibold text-gray-900">{target.visitor_name}</p>
-            <p className="text-xs text-gray-500">{target.purpose} · Visiting {target.host || target.host_name}</p>
+      <Dialog open={!!target} title="Check In Visitor" onClose={closeCheckIn}
+        footer={<>
+          <Btn variant="ghost" onClick={closeCheckIn}>Cancel</Btn>
+          <Btn onClick={confirmCheckIn} disabled={!badge || !idVerified}>Confirm & Issue Badge</Btn>
+        </>}>
+        {target && (
+          <div className="flex flex-col gap-3">
+            <div className="bg-blue-50 rounded-lg p-3">
+              <p className="text-sm font-semibold text-gray-900">{target.visitor_name}</p>
+              <p className="text-xs text-gray-500">{target.purpose} · Visiting {target.host || target.host_name}</p>
+            </div>
+
+            <div className="flex flex-col items-center gap-2 py-1">
+              <p className="text-xs text-gray-400 font-medium">Visitor QR Pass</p>
+              <QRCanvas data={`${target.qr_ref || target.id}|${target.visitor_name}|${target.visit_date}|${target.host || target.host_name}`} size={120} />
+              <span className="font-mono text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded">{target.qr_ref || target.id}</span>
+            </div>
+
+            <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-800">
+              ⚠️ Verify the visitor's government ID before proceeding.
+            </div>
+            <label className="flex items-start gap-2 text-xs text-gray-700 cursor-pointer">
+              <input type="checkbox" className="mt-0.5" checked={idVerified} onChange={e => setIdVerified(e.target.checked)} />
+              <span>Government ID verified — name and photo match.</span>
+            </label>
+
+            <Input label="Regular Badge Number" value={badge} onChange={e => setBadge(e.target.value)} placeholder="e.g. V-1024" required />
+
+            {/* Restricted area section — only visible to guard if pre-approved by Admin */}
+            {restrictedInfo && (
+              <div className="border border-red-200 bg-red-50 rounded-lg p-3 flex flex-col gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-base">🔒</span>
+                  <div>
+                    <p className="text-xs font-bold text-red-800">Restricted Area Access Approved</p>
+                    <p className="text-xs text-red-600">
+                      Area: <span className="font-semibold">{restrictedInfo.area_name}</span>
+                      {restrictedInfo.floor ? ` · ${restrictedInfo.floor}` : ""}
+                    </p>
+                  </div>
+                </div>
+                {restrictedInfo.status === "Pending" && !restrictedResult && (
+                  <>
+                    <p className="text-[11px] text-red-700">Issue a restricted badge number for this visitor.</p>
+                    <div className="flex gap-2">
+                      <input value={restrictedBadge} onChange={e => setRestrictedBadge(e.target.value)}
+                        placeholder="e.g. RA-1024"
+                        className="flex-1 h-9 px-3 rounded-lg border border-red-200 text-sm outline-none focus:ring-2 focus:ring-red-200 bg-white" />
+                      <Btn onClick={doIssueRestrictedBadge} disabled={issuingRestricted || !restrictedBadge}>
+                        {issuingRestricted ? "…" : "Issue"}
+                      </Btn>
+                    </div>
+                    {restrictedError && <p className="text-xs text-red-600">{restrictedError}</p>}
+                  </>
+                )}
+                {restrictedResult && (
+                  <div className="bg-white rounded-lg px-3 py-2 border border-red-100">
+                    <p className="text-xs font-semibold text-emerald-700">✅ Restricted badge issued</p>
+                    <p className="text-xs text-gray-600">Badge: <span className="font-mono font-bold">{restrictedResult.restricted_badge}</span></p>
+                    <p className="text-[11px] text-gray-400 mt-0.5">A second guard will scan this badge at the area entrance to confirm entry.</p>
+                  </div>
+                )}
+                {restrictedInfo.status === "Badge Issued" && (
+                  <p className="text-xs text-gray-500">Badge already issued: <span className="font-mono font-bold">{restrictedInfo.restricted_badge}</span></p>
+                )}
+              </div>
+            )}
+
+            {!idVerified && <p className="text-xs text-red-500">You must verify the government ID before confirming check-in.</p>}
           </div>
-          {/* Show QR of the visitor's pass */}
-          <div className="flex flex-col items-center gap-2 py-2">
-            <p className="text-xs text-gray-400 font-medium">Visitor QR Pass</p>
-            <QRCanvas data={`${target.qr_ref || target.id}|${target.visitor_name}|${target.visit_date}|${target.host || target.host_name}`} size={120} />
-            <span className="font-mono text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded">{target.qr_ref || target.id}</span>
-          </div>
-          <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-800">⚠️ Verify the visitor's government ID before proceeding.</div>
-          <label className="flex items-start gap-2 text-xs text-gray-700 cursor-pointer">
-            <input type="checkbox" className="mt-0.5" checked={idVerified} onChange={e => setIdVerified(e.target.checked)} />
-            <span>Government ID verified — name and photo match.</span>
-          </label>
-          <Input label="Badge Number" value={badge} onChange={e => setBadge(e.target.value)} placeholder="e.g. V-1024" required />
-          {!idVerified && <p className="text-xs text-red-500">You must verify the government ID before confirming.</p>}
-        </>}
+        )}
       </Dialog>
 
-      {/* QR Scanner modal */}
       {showScanner && <QRScanner onResult={handleQRResult} onClose={() => setShowScanner(false)} />}
     </div>
   );
